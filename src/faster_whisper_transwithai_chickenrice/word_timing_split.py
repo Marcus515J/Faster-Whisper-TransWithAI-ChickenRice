@@ -1,10 +1,8 @@
 """Optional word-timestamp based subtitle splitting.
 
-This module patches faster-whisper's public transcribe methods at import time.
-The patch is inert unless ``word_timing_split`` is present and enabled in the
-transcription kwargs.  When enabled it requests word timestamps and converts a
-coarse Whisper segment into smaller subtitle-sized segments without discarding
-text.
+The splitter requests faster-whisper word timestamps only when explicitly
+enabled, then converts coarse Whisper segments into subtitle-sized segments.
+It never truncates text to satisfy a duration limit.
 """
 
 from __future__ import annotations
@@ -70,12 +68,16 @@ def parse_word_timing_split_options(value: Any) -> WordTimingSplitOptions:
     )
 
 
+def _compact_text(text: Any) -> str:
+    return "".join(str(text or "").split())
+
+
 def _normalize_word(word: Any, segment_start: float, segment_end: float):
     start = getattr(word, "start", None)
     end = getattr(word, "end", None)
-    text = getattr(word, "word", "")
+    text = str(getattr(word, "word", ""))
 
-    if start is None or end is None or not str(text):
+    if start is None or end is None or not text.strip():
         return None
 
     start = max(float(segment_start), float(start))
@@ -83,15 +85,25 @@ def _normalize_word(word: Any, segment_start: float, segment_end: float):
     if end <= start:
         return None
 
-    return SimpleNamespace(start=start, end=end, word=str(text))
+    return SimpleNamespace(start=start, end=end, word=text)
+
+
+def _group_duration(words: list[Any]) -> float:
+    if not words:
+        return 0.0
+    return max(0.0, words[-1].end - words[0].start)
 
 
 def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> list[Any]:
     """Split one faster-whisper segment on word timing boundaries.
 
-    The original segment is returned unchanged when word timestamps are absent.
-    Text is never truncated: each emitted subtitle gets the exact concatenation
-    of the word strings assigned to that subtitle.
+    Safety rules:
+    - If word timestamps are absent, keep the original segment.
+    - If the concatenated word text does not match the original segment text,
+      keep the original segment instead of risking text loss.
+    - ``max_duration_s`` is a target, not a destructive hard cap. A short final
+      fragment may be merged back into the previous subtitle when the combined
+      duration is no more than ``max_duration_s + min_duration_s``.
     """
 
     if not options.enabled:
@@ -108,23 +120,25 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     if not words:
         return [segment]
 
-    result: list[SubtitleSegment] = []
+    # Word alignment must account for the complete decoded segment text. If it
+    # does not, refuse to split rather than silently dropping text.
+    if _compact_text("".join(word.word for word in words)) != _compact_text(getattr(segment, "text", "")):
+        return [segment]
+
+    groups: list[list[Any]] = []
     current: list[Any] = []
     previous = None
 
     def flush() -> None:
         nonlocal current
-        if not current:
-            return
-        text = "".join(word.word for word in current).strip()
-        if text:
-            result.append(SubtitleSegment(start=current[0].start, end=current[-1].end, text=text))
-        current = []
+        if current:
+            groups.append(current)
+            current = []
 
     for word in words:
         if current and previous is not None:
             gap_s = max(0.0, word.start - previous.end)
-            current_duration_s = max(0.0, previous.end - current[0].start)
+            current_duration_s = _group_duration(current)
             duration_if_added_s = max(0.0, word.end - current[0].start)
 
             split_for_pause = (
@@ -139,7 +153,7 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
         current.append(word)
         previous = word
 
-        current_duration_s = max(0.0, current[-1].end - current[0].start)
+        current_duration_s = _group_duration(current)
         ends_with_punctuation = bool(options.punctuation) and current[-1].word.rstrip().endswith(
             tuple(options.punctuation)
         )
@@ -152,7 +166,35 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
             previous = None
 
     flush()
-    return result or [segment]
+
+    # Avoid pathological tails such as a 4.94 s subtitle followed by a 0.34 s
+    # one-word fragment merely because the target duration was crossed. Allow a
+    # small extension (up to min_duration_s) and merge the final tail back.
+    if len(groups) >= 2 and options.min_duration_s > 0:
+        tail = groups[-1]
+        previous_group = groups[-2]
+        combined_duration_s = tail[-1].end - previous_group[0].start
+        if (
+            _group_duration(tail) < options.min_duration_s
+            and combined_duration_s <= options.max_duration_s + options.min_duration_s
+        ):
+            previous_group.extend(tail)
+            groups.pop()
+
+    result: list[SubtitleSegment] = []
+    for group in groups:
+        text = "".join(word.word for word in group).strip()
+        if text:
+            result.append(SubtitleSegment(start=group[0].start, end=group[-1].end, text=text))
+
+    if not result:
+        return [segment]
+
+    # Final preservation check across all emitted subtitles.
+    if _compact_text("".join(item.text for item in result)) != _compact_text(getattr(segment, "text", "")):
+        return [segment]
+
+    return result
 
 
 def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOptions):
@@ -172,9 +214,6 @@ def _patch_transcribe_class(cls: Any) -> bool:
         if not options.enabled:
             return original(self, *args, **kwargs)
 
-        # Ask faster-whisper to retain word-level alignment.  The app's normal
-        # generation path will consume only start/end/text from our split
-        # segments, so no other code needs to understand Word objects.
         kwargs["word_timestamps"] = True
         segments, info = original(self, *args, **kwargs)
         return split_segments_by_words(segments, options), info
