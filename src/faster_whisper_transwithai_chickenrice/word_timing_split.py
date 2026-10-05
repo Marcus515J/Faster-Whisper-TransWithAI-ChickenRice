@@ -21,6 +21,7 @@ class WordTimingSplitOptions:
     max_duration_s: float = 5.0
     pause_threshold_s: float = 0.35
     min_duration_s: float = 0.8
+    min_display_duration_s: float = 0.6
     split_on_punctuation: bool = True
     punctuation: str = "。！？!?"
 
@@ -63,6 +64,10 @@ def parse_word_timing_split_options(value: Any) -> WordTimingSplitOptions:
         max_duration_s=max(0.5, float(value.get("max_duration_s", defaults.max_duration_s))),
         pause_threshold_s=max(0.0, float(value.get("pause_threshold_s", defaults.pause_threshold_s))),
         min_duration_s=max(0.0, float(value.get("min_duration_s", defaults.min_duration_s))),
+        min_display_duration_s=max(
+            0.0,
+            float(value.get("min_display_duration_s", defaults.min_display_duration_s)),
+        ),
         split_on_punctuation=_coerce_bool(
             value.get("split_on_punctuation"), default=defaults.split_on_punctuation
         ),
@@ -126,13 +131,73 @@ def _compact_boundary_to_original_index(text: str, compact_boundary: int) -> int
     return non_space_positions[compact_boundary]
 
 
-def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) -> list[str] | None:
-    """Use timing-word boundaries to slice the original segment text losslessly.
+def _trailing_token(text: str) -> tuple[str, str] | None:
+    """Return (prefix, trailing token) when a short whitespace token is present."""
 
-    faster-whisper's word-level decoded text can differ slightly from the final
-    segment text.  We therefore align both strings and map group boundaries onto
-    the original text instead of emitting the word-level text itself.
+    stripped = text.rstrip()
+    split_at = stripped.rfind(" ")
+    if split_at < 0:
+        return None
+    prefix = stripped[:split_at].rstrip()
+    token = stripped[split_at + 1 :].strip()
+    if not prefix or not token:
+        return None
+    return prefix, token
+
+
+def _rebalance_short_text_pieces(pieces: list[str]) -> list[str]:
+    """Avoid awkward text boundaries such as ``好 / 舒服`` or ``...地方 / 呢``.
+
+    This changes only which side of an existing time boundary owns a few
+    characters; it never removes or duplicates characters.
     """
+
+    result = list(pieces)
+    for index in range(1, len(result)):
+        current = result[index].strip()
+        previous = result[index - 1].strip()
+        current_compact = _compact_text(current)
+        previous_compact = _compact_text(previous)
+
+        if not current_compact or not previous_compact:
+            continue
+
+        # If the previous subtitle ends in a one-character token (for example
+        # "好难受 好" / "舒服"), move that token forward.
+        trailing = _trailing_token(previous)
+        if trailing is not None:
+            prefix, token = trailing
+            if len(_compact_text(token)) == 1 and len(current_compact) <= 4:
+                result[index - 1] = prefix
+                result[index] = f"{token}{current}".strip()
+                continue
+
+        # A one-character tail such as "呢" is rarely useful on its own. Move a
+        # small suffix from the previous piece forward so the tail remains
+        # readable without merging the two subtitle time ranges.
+        if len(current_compact) == 1 and len(previous_compact) >= 6:
+            move_chars = 2
+            compact_seen = 0
+            cut_index = len(previous)
+            for position in range(len(previous) - 1, -1, -1):
+                if previous[position].isspace():
+                    continue
+                compact_seen += 1
+                if compact_seen == move_chars:
+                    cut_index = position
+                    break
+
+            prefix = previous[:cut_index].rstrip()
+            suffix = previous[cut_index:].strip()
+            if prefix and suffix:
+                result[index - 1] = prefix
+                result[index] = f"{suffix}{current}".strip()
+
+    return result
+
+
+def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) -> list[str] | None:
+    """Use timing-word boundaries to slice the original segment text losslessly."""
 
     if not groups:
         return None
@@ -155,13 +220,10 @@ def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) 
     compact_target_boundaries = [
         _map_compact_boundary(source, target, boundary) for boundary in source_boundaries
     ]
-
     original_boundaries = [
         _compact_boundary_to_original_index(segment_text, boundary) for boundary in compact_target_boundaries
     ]
 
-    # Mapping must progress strictly. Collapsed/reversed boundaries would create
-    # empty or reordered subtitles, so fall back to the original segment.
     previous = 0
     for boundary in original_boundaries:
         if boundary <= previous or boundary >= len(segment_text):
@@ -178,8 +240,10 @@ def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) 
     if len(pieces) != len(groups) or any(not piece for piece in pieces):
         return None
 
-    # Hard preservation check: all non-whitespace characters in the original
-    # segment must survive exactly once across the emitted subtitle pieces.
+    pieces = _rebalance_short_text_pieces(pieces)
+
+    if any(not piece for piece in pieces):
+        return None
     if _compact_text("".join(pieces)) != _compact_text(segment_text):
         return None
 
@@ -187,12 +251,7 @@ def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) 
 
 
 def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> list[Any]:
-    """Split one faster-whisper segment on word timing boundaries.
-
-    Word timings choose the boundaries, but subtitle text always comes from the
-    original segment text.  This preserves decoded text even when word-level
-    alignment omits or changes a small token.
-    """
+    """Split one faster-whisper segment on word timing boundaries."""
 
     if not options.enabled:
         return [segment]
@@ -250,9 +309,7 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
 
     flush()
 
-    # Avoid pathological tails such as a 4.94 s subtitle followed by a 0.34 s
-    # one-word fragment merely because the target duration was crossed. Allow a
-    # small extension (up to min_duration_s) and merge the final tail back.
+    # Avoid a tiny final fragment caused only by crossing the target duration.
     if len(groups) >= 2 and options.min_duration_s > 0:
         tail = groups[-1]
         previous_group = groups[-2]
@@ -265,7 +322,6 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
             groups.pop()
 
     if len(groups) <= 1:
-        # Still tighten the visible timing to actual aligned speech when safe.
         if groups:
             return [
                 SubtitleSegment(
@@ -286,9 +342,39 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     ]
 
 
+def _apply_minimum_display_duration(
+    segments: list[Any], options: WordTimingSplitOptions
+) -> list[SubtitleSegment]:
+    """Extend extremely short subtitles when there is free timeline space.
+
+    Extension never overlaps the following subtitle and never moves the start
+    earlier, so it cannot bridge a silence before the spoken line.
+    """
+
+    result: list[SubtitleSegment] = []
+    for index, segment in enumerate(segments):
+        start = float(segment.start)
+        end = float(segment.end)
+        text = str(segment.text).strip()
+
+        if options.min_display_duration_s > 0 and end - start < options.min_display_duration_s:
+            desired_end = start + options.min_display_duration_s
+            if index + 1 < len(segments):
+                next_start = float(segments[index + 1].start)
+                desired_end = min(desired_end, next_start)
+            end = max(end, desired_end)
+
+        result.append(SubtitleSegment(start=start, end=end, text=text))
+
+    return result
+
+
 def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOptions):
+    split_segments: list[Any] = []
     for segment in segments:
-        yield from split_segment_by_words(segment, options)
+        split_segments.extend(split_segment_by_words(segment, options))
+
+    yield from _apply_minimum_display_duration(split_segments, options)
 
 
 def _patch_transcribe_class(cls: Any) -> bool:
