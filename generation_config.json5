@@ -35,6 +35,29 @@
 
     "repetition_penalty": 1.1,
 
+    // 词级时间轴二次切分：保留 faster-whisper 的 word timestamps，
+    // 再按停顿、标点和最大时长把过粗的 Whisper segment 拆成真正独立字幕。
+    // Word-level subtitle splitting: use faster-whisper word timestamps to split
+    // coarse Whisper segments by pauses, punctuation and maximum duration.
+    "word_timing_split": {
+        "enabled": true,
+
+        // 单条字幕目标最大时长（秒）。超出时按最近的词边界拆分，不截断文字。
+        // Maximum subtitle duration in seconds. Splits on word boundaries; text is never truncated.
+        "max_duration_s": 5.0,
+
+        // 相邻词之间出现这么长的停顿时允许切开（秒）。
+        // Split when the silence between adjacent words reaches this threshold (seconds).
+        "pause_threshold_s": 0.35,
+
+        // 避免生成过碎的短字幕；达到该时长后才优先按停顿/标点切分。
+        // Avoid tiny fragments; pause/punctuation splitting is preferred after this duration.
+        "min_duration_s": 0.8,
+
+        "split_on_punctuation": true,
+        "punctuation": "。！？!?",
+    },
+
     // 智能VAD切分：先用外层VAD选择安全的连续音频块，再在每个块内启用 faster-whisper 内部VAD
     // Smart VAD split: outer VAD chooses safe contiguous chunks, then faster-whisper internal VAD runs inside each chunk
     "smart_split_with_vad": true,
@@ -54,8 +77,8 @@
         // Only merge if the gap between adjacent segments is <= max_gap_ms (avoid merging across long silences)
         "max_gap_ms": 2000,
 
-        // 单条字幕合并后的最大时长（毫秒），超过则停止合并（避免出现几十秒/几分钟的超长字幕）
-        // Maximum duration (ms) of a merged subtitle; stop merging when exceeded
+        // 这里不再依赖它做字幕切分；词级切分会在更前面正确拆文字和时间轴。
+        // This is no longer used as a subtitle splitter; word-level splitting happens earlier.
         "max_duration_ms": 20000,
     },
 
