@@ -35,14 +35,25 @@ class WordTimingSplitTests(unittest.TestCase):
 
         self.assertEqual(result, [segment])
 
+    def test_mismatched_word_text_returns_original_segment(self) -> None:
+        segment = make_segment(
+            0.0,
+            3.0,
+            "完整文本",
+            [make_word(0.0, 1.0, "完整"), make_word(1.1, 2.0, "文")],
+        )
+
+        result = split_segment_by_words(segment, WordTimingSplitOptions(enabled=True))
+
+        self.assertEqual(result, [segment])
+
     def test_splits_on_silence_without_losing_text(self) -> None:
         segment = make_segment(
             0.0,
             4.0,
-            "你好 世界",
+            "你好世界",
             [
                 make_word(0.0, 0.8, "你好"),
-                make_word(0.9, 1.7, " "),
                 make_word(2.2, 3.0, "世界"),
             ],
         )
@@ -85,6 +96,32 @@ class WordTimingSplitTests(unittest.TestCase):
 
         self.assertEqual([item.text for item in result], ["AB", "CD"])
         self.assertTrue(all((item.end - item.start) <= 2.0 for item in result))
+
+    def test_merges_short_final_tail_back_within_soft_extension(self) -> None:
+        segment = make_segment(
+            0.0,
+            5.3,
+            "ABCDE",
+            [
+                make_word(0.0, 1.0, "A"),
+                make_word(1.0, 2.0, "B"),
+                make_word(2.0, 3.0, "C"),
+                make_word(3.0, 4.94, "D"),
+                make_word(4.94, 5.28, "E"),
+            ],
+        )
+        options = WordTimingSplitOptions(
+            enabled=True,
+            max_duration_s=5.0,
+            pause_threshold_s=10.0,
+            min_duration_s=0.8,
+            split_on_punctuation=False,
+        )
+
+        result = split_segment_by_words(segment, options)
+
+        self.assertEqual([item.text for item in result], ["ABCDE"])
+        self.assertAlmostEqual(result[0].end - result[0].start, 5.28)
 
     def test_splits_on_punctuation_after_minimum_duration(self) -> None:
         segment = make_segment(
