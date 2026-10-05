@@ -2,12 +2,14 @@
 
 The splitter requests faster-whisper word timestamps only when explicitly
 enabled, then converts coarse Whisper segments into subtitle-sized segments.
-It never truncates text to satisfy a duration limit.
+Word timestamps decide *where* to split, while the final subtitle text is sliced
+from the original Whisper segment text so decoded text is never lost.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from functools import wraps
 from types import SimpleNamespace
 from typing import Any, Iterable
@@ -94,16 +96,102 @@ def _group_duration(words: list[Any]) -> float:
     return max(0.0, words[-1].end - words[0].start)
 
 
+def _map_compact_boundary(source: str, target: str, source_boundary: int) -> int:
+    """Map a character boundary from aligned compact source text to target text."""
+
+    if source_boundary <= 0:
+        return 0
+    if source_boundary >= len(source):
+        return len(target)
+
+    matcher = SequenceMatcher(None, source, target, autojunk=False)
+    for _tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if i1 <= source_boundary <= i2:
+            if i2 == i1:
+                return j2
+            ratio = (source_boundary - i1) / (i2 - i1)
+            return max(0, min(len(target), round(j1 + ratio * (j2 - j1))))
+
+    return len(target)
+
+
+def _compact_boundary_to_original_index(text: str, compact_boundary: int) -> int:
+    """Convert a compact-text boundary back into an index in the original text."""
+
+    non_space_positions = [index for index, char in enumerate(text) if not char.isspace()]
+    if compact_boundary <= 0:
+        return 0
+    if compact_boundary >= len(non_space_positions):
+        return len(text)
+    return non_space_positions[compact_boundary]
+
+
+def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) -> list[str] | None:
+    """Use timing-word boundaries to slice the original segment text losslessly.
+
+    faster-whisper's word-level decoded text can differ slightly from the final
+    segment text.  We therefore align both strings and map group boundaries onto
+    the original text instead of emitting the word-level text itself.
+    """
+
+    if not groups:
+        return None
+
+    source = _compact_text("".join(word.word for group in groups for word in group))
+    target = _compact_text(segment_text)
+    if not source or not target:
+        return None
+
+    matcher = SequenceMatcher(None, source, target, autojunk=False)
+    if matcher.ratio() < 0.60:
+        return None
+
+    source_boundaries: list[int] = []
+    consumed = 0
+    for group in groups[:-1]:
+        consumed += len(_compact_text("".join(word.word for word in group)))
+        source_boundaries.append(consumed)
+
+    compact_target_boundaries = [
+        _map_compact_boundary(source, target, boundary) for boundary in source_boundaries
+    ]
+
+    original_boundaries = [
+        _compact_boundary_to_original_index(segment_text, boundary) for boundary in compact_target_boundaries
+    ]
+
+    # Mapping must progress strictly. Collapsed/reversed boundaries would create
+    # empty or reordered subtitles, so fall back to the original segment.
+    previous = 0
+    for boundary in original_boundaries:
+        if boundary <= previous or boundary >= len(segment_text):
+            return None
+        previous = boundary
+
+    pieces: list[str] = []
+    start = 0
+    for boundary in original_boundaries:
+        pieces.append(segment_text[start:boundary].strip())
+        start = boundary
+    pieces.append(segment_text[start:].strip())
+
+    if len(pieces) != len(groups) or any(not piece for piece in pieces):
+        return None
+
+    # Hard preservation check: all non-whitespace characters in the original
+    # segment must survive exactly once across the emitted subtitle pieces.
+    if _compact_text("".join(pieces)) != _compact_text(segment_text):
+        return None
+
+    return pieces
+
+
 def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> list[Any]:
     """Split one faster-whisper segment on word timing boundaries.
 
-    Safety rules:
-    - If word timestamps are absent, keep the original segment.
-    - If the concatenated word text does not match the original segment text,
-      keep the original segment instead of risking text loss.
-    - ``max_duration_s`` is a target, not a destructive hard cap. A short final
-      fragment may be merged back into the previous subtitle when the combined
-      duration is no more than ``max_duration_s + min_duration_s``.
+    Word timings choose the boundaries, but subtitle text always comes from the
+    original segment text.  This preserves decoded text even when word-level
+    alignment omits or changes a small token.
     """
 
     if not options.enabled:
@@ -118,11 +206,6 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
         if normalized is not None
     ]
     if not words:
-        return [segment]
-
-    # Word alignment must account for the complete decoded segment text. If it
-    # does not, refuse to split rather than silently dropping text.
-    if _compact_text("".join(word.word for word in words)) != _compact_text(getattr(segment, "text", "")):
         return [segment]
 
     groups: list[list[Any]] = []
@@ -181,20 +264,26 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
             previous_group.extend(tail)
             groups.pop()
 
-    result: list[SubtitleSegment] = []
-    for group in groups:
-        text = "".join(word.word for word in group).strip()
-        if text:
-            result.append(SubtitleSegment(start=group[0].start, end=group[-1].end, text=text))
-
-    if not result:
+    if len(groups) <= 1:
+        # Still tighten the visible timing to actual aligned speech when safe.
+        if groups:
+            return [
+                SubtitleSegment(
+                    start=groups[0][0].start,
+                    end=groups[0][-1].end,
+                    text=str(getattr(segment, "text", "")).strip(),
+                )
+            ]
         return [segment]
 
-    # Final preservation check across all emitted subtitles.
-    if _compact_text("".join(item.text for item in result)) != _compact_text(getattr(segment, "text", "")):
+    pieces = _slice_original_text_for_groups(str(getattr(segment, "text", "")), groups)
+    if pieces is None:
         return [segment]
 
-    return result
+    return [
+        SubtitleSegment(start=group[0].start, end=group[-1].end, text=text)
+        for group, text in zip(groups, pieces, strict=True)
+    ]
 
 
 def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOptions):
