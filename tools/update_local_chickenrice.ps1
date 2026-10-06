@@ -109,7 +109,10 @@ try {
     $configText = Get-Content $Downloads[0].Temp -Raw -Encoding UTF8
     if ($configText -notmatch '"word_timing_split"' -or
         $configText -notmatch '"min_display_duration_s"\s*:\s*0\.6' -or
-        $configText -notmatch '"end_hold_s"\s*:\s*0\.5' -or
+        $configText -notmatch '"end_hold_s"\s*:\s*1\.0' -or
+        $configText -notmatch '"beam_size"\s*:\s*5' -or
+        $configText -notmatch '"no_repeat_ngram_size"\s*:\s*3' -or
+        $configText -notmatch '"compression_ratio_threshold"\s*:\s*2\.0' -or
         $configText -notmatch '"smart_split_with_vad"\s*:\s*false' -or
         $configText -notmatch '"max_duration_ms"\s*:\s*0') {
         throw "仓库中的 generation_config.json5 未通过安全检查，已停止更新。"
@@ -119,7 +122,8 @@ try {
     if ($wordText -notmatch 'class WordTimingSplitOptions' -or
         $wordText -notmatch 'install_word_timing_split_patch' -or
         $wordText -notmatch 'min_display_duration_s' -or
-        $wordText -notmatch 'end_hold_s') {
+        $wordText -notmatch '_parse_clip_timestamps' -or
+        $wordText -notmatch '_matching_speech_span_end') {
         throw "仓库中的 word_timing_split.py 未通过安全检查，已停止更新。"
     }
 
@@ -171,12 +175,14 @@ install_word_timing_split_patch()
     $ok =
         ($finalConfig -match '"word_timing_split"') -and
         ($finalConfig -match '"min_display_duration_s"\s*:\s*0\.6') -and
-        ($finalConfig -match '"end_hold_s"\s*:\s*0\.5') -and
+        ($finalConfig -match '"end_hold_s"\s*:\s*1\.0') -and
+        ($finalConfig -match '"no_repeat_ngram_size"\s*:\s*3') -and
+        ($finalConfig -match '"compression_ratio_threshold"\s*:\s*2\.0') -and
         ($finalConfig -match '"smart_split_with_vad"\s*:\s*false') -and
         ($finalConfig -match '"segment_merge"\s*:\s*\{[\s\S]*?"enabled"\s*:\s*false') -and
         ($finalConfig -match '"max_duration_ms"\s*:\s*0') -and
         ($finalWord -match 'install_word_timing_split_patch') -and
-        ($finalWord -match 'end_hold_s') -and
+        ($finalWord -match '_matching_speech_span_end') -and
         ($finalInfer -match 'install_word_timing_split_patch')
 
     if (!$ok) {
