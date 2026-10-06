@@ -69,9 +69,7 @@ def parse_word_timing_split_options(value: Any) -> WordTimingSplitOptions:
             0.0,
             float(value.get("min_display_duration_s", defaults.min_display_duration_s)),
         ),
-        split_on_punctuation=_coerce_bool(
-            value.get("split_on_punctuation"), default=defaults.split_on_punctuation
-        ),
+        split_on_punctuation=_coerce_bool(value.get("split_on_punctuation"), default=defaults.split_on_punctuation),
         punctuation=str(value.get("punctuation", defaults.punctuation)),
     )
 
@@ -218,9 +216,7 @@ def _slice_original_text_for_groups(segment_text: str, groups: list[list[Any]]) 
         consumed += len(_compact_text("".join(word.word for word in group)))
         source_boundaries.append(consumed)
 
-    compact_target_boundaries = [
-        _map_compact_boundary(source, target, boundary) for boundary in source_boundaries
-    ]
+    compact_target_boundaries = [_map_compact_boundary(source, target, boundary) for boundary in source_boundaries]
     original_boundaries = [
         _compact_boundary_to_original_index(segment_text, boundary) for boundary in compact_target_boundaries
     ]
@@ -260,9 +256,7 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     raw_words = getattr(segment, "words", None) or []
     words = [
         normalized
-        for normalized in (
-            _normalize_word(word, float(segment.start), float(segment.end)) for word in raw_words
-        )
+        for normalized in (_normalize_word(word, float(segment.start), float(segment.end)) for word in raw_words)
         if normalized is not None
     ]
     if not words:
@@ -300,11 +294,7 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
         ends_with_punctuation = bool(options.punctuation) and current[-1].word.rstrip().endswith(
             tuple(options.punctuation)
         )
-        if (
-            options.split_on_punctuation
-            and ends_with_punctuation
-            and current_duration_s >= options.min_duration_s
-        ):
+        if options.split_on_punctuation and ends_with_punctuation and current_duration_s >= options.min_duration_s:
             flush()
             previous = None
 
@@ -343,9 +333,7 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     ]
 
 
-def _apply_minimum_display_duration(
-    segments: list[Any], options: WordTimingSplitOptions
-) -> list[SubtitleSegment]:
+def _apply_minimum_display_duration(segments: list[Any], options: WordTimingSplitOptions) -> list[SubtitleSegment]:
     """Extend extremely short subtitles when there is free timeline space.
 
     Extension never overlaps the following subtitle and never moves the start
