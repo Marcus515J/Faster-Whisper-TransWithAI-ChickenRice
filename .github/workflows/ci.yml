@@ -70,6 +70,10 @@ jobs:
         if ($failed) { exit 1 }
         Write-Host "All PowerShell scripts parsed successfully."
 
+    - name: Stage 2 SRT self-test
+      shell: powershell
+      run: .\tools\translate_srt_api.ps1 -SelfTest
+
   # Full packaging is intentionally manual here. Releases still run the complete
   # CUDA/ROCm + model matrix through build-release-conda.yml.
   build-windows:
