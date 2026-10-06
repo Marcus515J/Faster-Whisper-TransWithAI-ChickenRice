@@ -1,8 +1,8 @@
 name: CI
 
-# Build-and-check CI: lints the code and builds + e2e-smoke-tests every Windows
-# variant, but never publishes a release. Releasing is handled separately by
-# build-release-conda.yml (which runs on version tags).
+# Routine CI stays fast and deterministic: lint/type-check Python and parse
+# PowerShell scripts on Windows. The expensive full Windows build matrix is kept
+# for explicit manual verification and release workflows.
 
 on:
   push:
@@ -11,7 +11,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch / PR to avoid piling up expensive builds.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -32,7 +31,6 @@ jobs:
     - name: Install lint tools
       run: |
         python -m pip install --upgrade pip
-        # ruff pinned to match .pre-commit-config.yaml; mypy (+ stubs) for type-checking.
         pip install "ruff==0.15.2" "mypy==1.18.2" "types-requests"
 
     - name: Ruff lint
@@ -44,10 +42,39 @@ jobs:
     - name: Mypy type-check
       run: mypy --config-file pyproject.toml src infer.py download_models.py modal_infer.py build_windows.py runtime_hook.py
 
-  # Build every Windows variant and run the executable smoke (e2e) checks.
-  # upload_artifacts is disabled: CI only verifies the build/e2e, it does not distribute.
+  powershell-parse:
+    name: PowerShell 5.1 parse check
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Parse PowerShell scripts
+      shell: powershell
+      run: |
+        $failed = $false
+        Get-ChildItem -Path . -Recurse -File -Filter *.ps1 | ForEach-Object {
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $_.FullName,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $failed = $true
+            Write-Host "Parse errors in $($_.FullName):" -ForegroundColor Red
+            $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+          }
+        }
+        if ($failed) { exit 1 }
+        Write-Host "All PowerShell scripts parsed successfully."
+
+  # Full packaging is intentionally manual here. Releases still run the complete
+  # CUDA/ROCm + model matrix through build-release-conda.yml.
   build-windows:
-    name: Build and check
+    if: github.event_name == 'workflow_dispatch'
+    name: Build and check all Windows variants
     uses: ./.github/workflows/build-windows.yml
     with:
       upload_artifacts: false
