@@ -1,5 +1,5 @@
 {
-    // 已通过 30 分钟样本回归测试的字幕切分配置。
+    // 已通过长样本回归测试的字幕切分配置。
     // Validated subtitle timing/splitting configuration.
 
     "task": "translate",
@@ -16,23 +16,22 @@
     "repetition_penalty": 1.1,
 
     // 用 faster-whisper 的词级时间戳拆分过粗的 Whisper segment。
-    // Word timings choose split points; original decoded text is preserved.
+    // 开始时间保持词级精度；结束时间额外保留 0.5 秒尾巴，且绝不压到下一条字幕。
     "word_timing_split": {
         "enabled": true,
         "max_duration_s": 5.0,
         "pause_threshold_s": 0.35,
         "min_duration_s": 0.8,
         "min_display_duration_s": 0.6,
+        "end_hold_s": 0.5,
         "split_on_punctuation": true,
         "punctuation": "。！？!?",
     },
 
-    // 本轮验证中关闭 Smart VAD chunking，避免额外分块改变字幕边界。
     "smart_split_with_vad": false,
     "target_chunk_duration_s": 20,
 
     // 禁用旧的 segment merge / max_duration 时间硬截断。
-    // Keep these disabled: word-level splitting now owns subtitle segmentation.
     "segment_merge": {
         "enabled": false,
         "max_gap_ms": 500,
