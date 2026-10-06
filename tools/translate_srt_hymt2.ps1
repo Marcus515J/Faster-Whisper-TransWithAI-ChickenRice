@@ -449,17 +449,21 @@ function Invoke-SelfTest {
         throw "Self-test delimiter split failed."
     }
 
-    $cleaned = Clean-TranslationText '"测试"' 'テスト'
-    if ($cleaned -ne "测试") { throw "Self-test quote cleanup failed." }
+    $testZh = ([string][char]0x6D4B) + ([string][char]0x8BD5)
+    $testJa = ([string][char]0x30C6) + ([string][char]0x30B9) + ([string][char]0x30C8)
+    $asciiQuote = [string][char]0x22
+    $cleaned = Clean-TranslationText ($asciiQuote + $testZh + $asciiQuote) $testJa
+    if ($cleaned -ne $testZh) { throw "Self-test quote cleanup failed." }
 
-    $quotedTranslation = ([string][char]0x201C) + "测试" + ([string][char]0x201D)
-    $quotedSource = ([string][char]0x300C) + "テスト" + ([string][char]0x300D)
+    $quotedTranslation = ([string][char]0x201C) + $testZh + ([string][char]0x201D)
+    $quotedSource = ([string][char]0x300C) + $testJa + ([string][char]0x300D)
     $preserved = Clean-TranslationText $quotedTranslation $quotedSource
     if ($preserved -ne $quotedTranslation) {
         throw "Self-test source quote preservation failed."
     }
 
-    $shortTarget = [pscustomobject]@{ ja = "せーし" }
+    $shortJa = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
+    $shortTarget = [pscustomobject]@{ ja = $shortJa }
     if ($ShortSegmentChars -gt 0 -and -not (Test-ShouldTranslateSingle $shortTarget)) {
         throw "Self-test short-segment isolation failed."
     }
