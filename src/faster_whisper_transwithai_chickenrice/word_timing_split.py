@@ -8,11 +8,12 @@ from the original Whisper segment text so decoded text is never lost.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import wraps
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True)
