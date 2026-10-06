@@ -32,7 +32,7 @@
     "target_chunk_duration_s": 20,
 
     // 禁用旧的 segment merge / max_duration 时间硬截断。
-    // Word-level splitting now owns subtitle segmentation.
+    // Keep these disabled: word-level splitting now owns subtitle segmentation.
     "segment_merge": {
         "enabled": false,
         "max_gap_ms": 500,
