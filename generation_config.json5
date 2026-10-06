@@ -1,12 +1,20 @@
 {
-    // 已通过长样本回归测试的字幕切分配置。
-    // Validated subtitle timing/splitting configuration.
+    // 长样本回归后的质量优先配置。
+    // Quality-first subtitle timing and recognition configuration.
 
     "task": "translate",
     "vad_filter": true,
 
+    // 提高解码质量，并减少静音/气声上的幻觉文字。
+    "beam_size": 5,
+    "temperature": 0.0,
+    "condition_on_previous_text": false,
+    "log_prob_threshold": -0.8,
+    "no_speech_threshold": 0.5,
+    "hallucination_silence_threshold": 1.0,
+
     "vad_parameters": {
-        "threshold": 0.5,
+        "threshold": 0.55,
         "min_speech_duration_ms": 300,
         "min_silence_duration_ms": 100,
         "speech_pad_ms": 200,
@@ -16,14 +24,14 @@
     "repetition_penalty": 1.1,
 
     // 用 faster-whisper 的词级时间戳拆分过粗的 Whisper segment。
-    // 开始时间保持词级精度；结束时间额外保留 0.5 秒尾巴，且绝不压到下一条字幕。
+    // 开始时间保持词级精度；结束时间额外保留 1.0 秒，且绝不压到下一条字幕。
     "word_timing_split": {
         "enabled": true,
         "max_duration_s": 5.0,
         "pause_threshold_s": 0.35,
         "min_duration_s": 0.8,
         "min_display_duration_s": 0.6,
-        "end_hold_s": 0.5,
+        "end_hold_s": 1.0,
         "split_on_punctuation": true,
         "punctuation": "。！？!?",
     },
