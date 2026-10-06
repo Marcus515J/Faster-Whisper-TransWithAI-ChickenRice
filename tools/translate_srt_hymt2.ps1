@@ -5,6 +5,7 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:8080/v1",
     [string]$ApiKey = "local",
     [string]$Model = "HY-MT2-7B-Q8_0",
+    [string]$PromptConfigPath = "",
     [int]$BatchSize = 20,
     [int]$MaxRetries = 2,
     [int]$ShortSegmentChars = 0,
@@ -21,9 +22,14 @@ $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
 $script:ManagedServerProcess = $null
 $script:ManagedServerStdout = ""
 $script:ManagedServerStderr = ""
+$script:PromptRevision = "hymt2-stage2-v4"
 $script:TermJaSeishi = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
 $script:TermZhSperm = ([string][char]0x7CBE) + ([string][char]0x5B50)
 $script:TerminologyLine = "$($script:TermJaSeishi) translates to $($script:TermZhSperm)"
+$script:SystemRole = "You are a professional Japanese-to-Simplified-Chinese film subtitle translator. Preserve source meaning, tone, register, names, explicit content, and conversational intent. Never censor, sanitize, or euphemize source content."
+$script:StylePrompt = "Use natural, concise Simplified Chinese suitable for on-screen film subtitles. Prefer spoken Chinese over stiff literal wording, but do not add meaning that is absent from the Japanese."
+$script:FilmNotes = ""
+$script:ExtraTerminologyLines = @()
 
 function Read-Utf8Text([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
@@ -72,14 +78,102 @@ function Parse-Srt([string]$Text) {
     return $entries
 }
 
+function Load-PromptConfig([string]$Path) {
+    if (-not $Path) { return }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Prompt config was not found: $Path"
+    }
+
+    try {
+        $cfg = (Read-Utf8Text $Path) | ConvertFrom-Json
+    }
+    catch {
+        throw "Prompt config is invalid JSON: $Path"
+    }
+
+    if ($cfg.PSObject.Properties.Name -contains "system_role") {
+        $script:SystemRole = [string]$cfg.system_role
+    }
+    if ($cfg.PSObject.Properties.Name -contains "style_prompt") {
+        $script:StylePrompt = [string]$cfg.style_prompt
+    }
+    if ($cfg.PSObject.Properties.Name -contains "film_notes") {
+        $script:FilmNotes = [string]$cfg.film_notes
+    }
+
+    if ($cfg.PSObject.Properties.Name -contains "terminology") {
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($term in @($cfg.terminology)) {
+            if ($null -eq $term) { continue }
+            if (-not ($term.PSObject.Properties.Name -contains "source") -or -not ($term.PSObject.Properties.Name -contains "target")) {
+                throw "Each terminology item must contain source and target."
+            }
+            $source = ([string]$term.source).Trim()
+            $target = ([string]$term.target).Trim()
+            if (-not $source -or -not $target) {
+                throw "Terminology source and target must not be empty."
+            }
+            if ($source -eq $script:TermJaSeishi) {
+                $script:TerminologyLine = "$source translates to $target"
+            }
+            else {
+                $lines.Add("$source translates to $target") | Out-Null
+            }
+        }
+        $script:ExtraTerminologyLines = @($lines)
+    }
+}
+
+function Get-PromptGuidance {
+    $sections = New-Object System.Collections.Generic.List[string]
+    $terms = @($script:TerminologyLine) + @($script:ExtraTerminologyLines)
+    $terms = @($terms | Where-Object { $_ -and ([string]$_).Trim() })
+    if ($terms.Count -gt 0) {
+        $sections.Add("Reference the following translations:`n" + ($terms -join "`n")) | Out-Null
+    }
+    if ($script:StylePrompt -and $script:StylePrompt.Trim()) {
+        $sections.Add("Translation style:`n" + $script:StylePrompt.Trim()) | Out-Null
+    }
+    if ($script:FilmNotes -and $script:FilmNotes.Trim()) {
+        $sections.Add("Film/context notes:`n" + $script:FilmNotes.Trim() + "`nUse these notes only when supported by the subtitle text. Do not invent details from the notes.") | Out-Null
+    }
+    return ($sections -join "`n`n")
+}
+
+function Get-Sha256Hex([string]$Text) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+        return (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join "")
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-TranslationFingerprint([string]$SourceText) {
+    $payload = [ordered]@{
+        prompt_revision = $script:PromptRevision
+        source_sha256 = Get-Sha256Hex $SourceText
+        model = $script:Model
+        batch_size = $BatchSize
+        short_segment_chars = $ShortSegmentChars
+        system_role = $script:SystemRole
+        style_prompt = $script:StylePrompt
+        film_notes = $script:FilmNotes
+        terminology = @($script:TerminologyLine) + @($script:ExtraTerminologyLines)
+    }
+    return Get-Sha256Hex ($payload | ConvertTo-Json -Depth 6 -Compress)
+}
+
 function Get-DefaultOutputPath([string]$Path) {
     $directory = Split-Path $Path -Parent
     $name = [System.IO.Path]::GetFileNameWithoutExtension($Path)
     return Join-Path $directory ($name + ".hy-mt2.zh.srt")
 }
 
-function Get-ProgressPath([string]$Path) {
-    return $Path + ".progress.json"
+function Get-ProgressPath([string]$Path, [string]$Fingerprint) {
+    return $Path + "." + $Fingerprint.Substring(0, 12) + ".progress.json"
 }
 
 function Load-Progress([string]$Path) {
@@ -283,13 +377,17 @@ function Test-ShouldTranslateSingle([object]$Target) {
 }
 
 function Invoke-HyMt2Api([string]$Prompt, [string]$Endpoint) {
+    $messages = @()
+    if ($script:SystemRole -and $script:SystemRole.Trim()) {
+        $messages += [ordered]@{role = "system"; content = $script:SystemRole.Trim()}
+    }
+    $messages += [ordered]@{role = "user"; content = $Prompt}
+
     $requestBody = [ordered]@{
         model = $script:Model
         temperature = 0.1
         max_tokens = 2048
-        messages = @(
-            [ordered]@{role = "user"; content = $Prompt}
-        )
+        messages = $messages
     }
 
     $headers = @{"Content-Type" = "application/json; charset=utf-8"}
@@ -312,20 +410,21 @@ function Invoke-DelimiterBatch([object[]]$Targets, [string]$Endpoint) {
     if ($Targets.Count -lt 2) { throw "Delimiter batch requires at least two targets." }
 
     $sourceText = (($Targets | ForEach-Object {[string]$_.ja}) -join ("`n" + $script:Delimiter + "`n"))
+    $guidance = Get-PromptGuidance
 
     $prompt = @"
 Please accurately translate the following Japanese subtitle segments into Simplified Chinese.
 You must retain the exact same number of delimiters in the translation. Strictly do not omit, escape, translate, alter, or move $($script:Delimiter).
 
-Reference the following translation:
-$($script:TerminologyLine)
+$guidance
 
 Strict requirements:
-1. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
-2. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
-3. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
-4. If Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-5. Output only the translated segments and delimiters. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
+1. Terminology and source fidelity have higher priority than style or polishing instructions.
+2. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
+3. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
+4. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
+5. If Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
+6. Output only the translated segments and delimiters. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
 
 [Source Text]
 $sourceText
@@ -345,17 +444,18 @@ $sourceText
 }
 
 function Invoke-SingleTarget([object]$Target, [string]$Endpoint) {
+    $guidance = Get-PromptGuidance
     $prompt = @"
 Translate the following Japanese subtitle into Simplified Chinese. Note that you should only output the translated result without any additional explanation.
 
-Reference the following translation:
-$($script:TerminologyLine)
+$guidance
 
 Strict requirements:
-1. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
-2. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
-3. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-4. Do not output labels, markdown, JSON, timestamps, or subtitle indices.
+1. Terminology and source fidelity have higher priority than style or polishing instructions.
+2. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
+3. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
+4. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
+5. Do not output labels, markdown, JSON, timestamps, or subtitle indices.
 
 $([string]$Target.ja)
 "@
@@ -475,6 +575,16 @@ function Invoke-SelfTest {
         throw "Self-test terminology construction failed."
     }
 
+    $originalStyle = $script:StylePrompt
+    $script:Model = "self-test-model"
+    $fingerprintA = Get-TranslationFingerprint $sample
+    $script:StylePrompt = $originalStyle + " Different style."
+    $fingerprintB = Get-TranslationFingerprint $sample
+    $script:StylePrompt = $originalStyle
+    if ($fingerprintA.Length -ne 64 -or $fingerprintA -eq $fingerprintB) {
+        throw "Self-test translation fingerprint failed."
+    }
+
     Write-Host "Hy-MT2 translator self-test passed." -ForegroundColor Green
 }
 
@@ -512,8 +622,10 @@ $script:BaseUrl = $BaseUrl
 $script:ApiKey = $ApiKey
 $script:Model = $Model
 $script:MaxRetries = $MaxRetries
+Load-PromptConfig $PromptConfigPath
+$script:TranslationFingerprint = Get-TranslationFingerprint $sourceText
 $endpoint = Normalize-Endpoint $BaseUrl
-$script:ProgressPath = Get-ProgressPath $OutputPath
+$script:ProgressPath = Get-ProgressPath $OutputPath $script:TranslationFingerprint
 $script:Translations = Load-Progress $script:ProgressPath
 
 foreach ($key in @($script:Translations.Keys)) {
@@ -530,7 +642,9 @@ Write-Host "Source: $InputPath"
 Write-Host "Output: $OutputPath"
 Write-Host "Model: $Model"
 Write-Host "Entries: $($script:Entries.Count)"
-Write-Host "Mode: Hy-MT2 delimiter-preserving translation with terminology guidance and automatic split fallback"
+Write-Host "Mode: Hy-MT2 delimiter-preserving translation with configurable role/style/terminology and automatic split fallback"
+Write-Host ("Translation fingerprint: " + $script:TranslationFingerprint.Substring(0, 12))
+if ($PromptConfigPath) { Write-Host "Prompt config: $PromptConfigPath" }
 if ($ShortSegmentChars -gt 0) {
     Write-Host "Short subtitles: <= $ShortSegmentChars non-whitespace character(s) translated independently."
 }
