@@ -1,9 +1,14 @@
 param(
-    [string]$InstallRoot = "H:\0H\翻译\transwithai\1.10"
+    [string]$InstallRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+if (-not $InstallRoot) {
+    $translatedFolder = ([char]0x7FFB).ToString() + ([char]0x8BD1).ToString()
+    $InstallRoot = Join-Path (Join-Path (Join-Path "H:\0H" $translatedFolder) "transwithai") "1.10"
+}
 
 $RepoRaw = "https://raw.githubusercontent.com/Marcus515J/Faster-Whisper-TransWithAI-ChickenRice/main"
 $PackageDir = Join-Path $InstallRoot "_internal\faster_whisper_transwithai_chickenrice"
@@ -12,13 +17,13 @@ $ConfigPath = Join-Path $InstallRoot "generation_config.json5"
 $WordSplitPath = Join-Path $PackageDir "word_timing_split.py"
 
 if (!(Test-Path $InstallRoot)) {
-    throw "找不到海南鸡目录：$InstallRoot"
+    throw "ChickenRice install directory was not found: $InstallRoot"
 }
 if (!(Test-Path $PackageDir)) {
-    throw "找不到内部程序目录：$PackageDir"
+    throw "Internal package directory was not found: $PackageDir"
 }
 if (!(Test-Path $InferPath)) {
-    throw "找不到 infer.py：$InferPath"
+    throw "infer.py was not found: $InferPath"
 }
 
 $TempDir = Join-Path $env:TEMP ("chickenrice-update-" + [guid]::NewGuid().ToString("N"))
@@ -67,12 +72,12 @@ function Backup-File([string]$Path, [string]$RelativeName) {
 }
 
 try {
-    Write-Host "正在检查 GitHub main 最新配置..." -ForegroundColor Cyan
+    Write-Host "Checking GitHub main for the latest validated files..." -ForegroundColor Cyan
 
     foreach ($item in $Downloads) {
         Invoke-WebRequest -Uri $item.Url -OutFile $item.Temp -UseBasicParsing
         if (!(Test-Path $item.Temp) -or (Get-Item $item.Temp).Length -lt 20) {
-            throw "下载文件异常：$($item.Name)"
+            throw "Downloaded file is invalid: $($item.Name)"
         }
     }
 
@@ -81,14 +86,14 @@ try {
         $configText -notmatch '"min_display_duration_s"\s*:\s*0\.6' -or
         $configText -notmatch '"smart_split_with_vad"\s*:\s*false' -or
         $configText -notmatch '"max_duration_ms"\s*:\s*0') {
-        throw "仓库中的 generation_config.json5 未通过安全检查，已停止更新。"
+        throw "generation_config.json5 from GitHub failed validation. Update stopped."
     }
 
     $wordText = Get-Content $Downloads[1].Temp -Raw -Encoding UTF8
     if ($wordText -notmatch 'class WordTimingSplitOptions' -or
         $wordText -notmatch 'install_word_timing_split_patch' -or
         $wordText -notmatch 'min_display_duration_s') {
-        throw "仓库中的 word_timing_split.py 未通过安全检查，已停止更新。"
+        throw "word_timing_split.py from GitHub failed validation. Update stopped."
     }
 
     foreach ($item in $Downloads) {
@@ -105,7 +110,7 @@ try {
     if ($inferText -notmatch 'install_word_timing_split_patch') {
         $target = 'from .vad_manager import VadConfig, VadModelManager'
         if ($inferText -notmatch [regex]::Escape($target)) {
-            throw "infer.py 结构与预期不一致，无法安全安装词级切分挂钩。"
+            throw "infer.py does not match the expected structure; refusing to patch it."
         }
 
         Backup-File $InferPath "infer.py"
@@ -121,7 +126,7 @@ install_word_timing_split_patch()
             $inferText,
             (New-Object System.Text.UTF8Encoding($false))
         )
-        $Changed.Add("infer.py 挂钩") | Out-Null
+        $Changed.Add("infer.py hook") | Out-Null
     }
 
     $finalConfig = Get-Content $ConfigPath -Raw -Encoding UTF8
@@ -138,35 +143,35 @@ install_word_timing_split_patch()
         ($finalInfer -match 'install_word_timing_split_patch')
 
     if (!$ok) {
-        throw "更新后的本地文件未通过最终核对。"
+        throw "Updated local files failed final validation."
     }
 
     Write-Host ""
     if ($Changed.Count -eq 0) {
-        Write-Host "✅ 已经是最新方案，无需修改。" -ForegroundColor Green
+        Write-Host "Already up to date." -ForegroundColor Green
     } else {
-        Write-Host "✅ 更新完成：" -ForegroundColor Green
+        Write-Host "Update completed:" -ForegroundColor Green
         foreach ($name in $Changed) {
             Write-Host "   - $name"
         }
         if ($null -ne $BackupDir) {
-            Write-Host "备份位置：$BackupDir"
+            Write-Host "Backup: $BackupDir"
         }
     }
-    Write-Host "✅ 当前本地配置与仓库 main 的字幕方案一致。" -ForegroundColor Green
+    Write-Host "Local subtitle files now match repository main." -ForegroundColor Green
 }
 catch {
     Write-Host ""
-    Write-Host "❌ 更新失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
 
     if ($BackedUp.Count -gt 0) {
-        Write-Host "正在恢复本次更新前的文件..." -ForegroundColor Yellow
+        Write-Host "Restoring files from before this update..." -ForegroundColor Yellow
         foreach ($entry in $BackedUp) {
             if (Test-Path $entry.Backup) {
                 Copy-Item $entry.Backup $entry.Original -Force
             }
         }
-        Write-Host "✅ 已恢复。" -ForegroundColor Yellow
+        Write-Host "Restore completed." -ForegroundColor Yellow
     }
     exit 1
 }
