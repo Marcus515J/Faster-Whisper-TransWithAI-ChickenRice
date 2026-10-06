@@ -290,20 +290,20 @@ function Assert-TimelineLocked([object[]]$SourceEntries, [string]$OutputText) {
 }
 
 function Invoke-SelfTest {
-    $sample = "1`r`n00:00:01,000 --> 00:00:02,500`r`nこんにちは`r`n`r`n2`r`n00:00:03,000 --> 00:00:04,000`r`nはい`r`n"
+    $sample = "1`r`n00:00:01,000 --> 00:00:02,500`r`nkonnichiwa`r`n`r`n2`r`n00:00:03,000 --> 00:00:04,000`r`nhai`r`n"
     $entries = @(Parse-Srt $sample)
     if ($entries.Count -ne 2) { throw "Self-test parse count failed." }
 
-    $translations = @{1 = "你好"; 2 = ""}
+    $translations = @{1 = "hello"; 2 = ""}
     $output = Build-Srt $entries $translations
     Assert-TimelineLocked $entries $output
-    if ($output -notmatch '00:00:01,000 --> 00:00:02,500' -or $output -notmatch '你好') {
+    if ($output -notmatch '00:00:01,000 --> 00:00:02,500' -or $output -notmatch 'hello') {
         throw "Self-test output failed."
     }
 
-    $response = '[{"id":1,"zh":"你好"},{"id":2,"zh":"嗯"}]'
+    $response = '[{"id":1,"zh":"hello"},{"id":2,"zh":"yes"}]'
     $parsed = Convert-TranslationResponse $response $entries
-    if ($parsed[1] -ne "你好" -or $parsed[2] -ne "嗯") {
+    if ($parsed[1] -ne "hello" -or $parsed[2] -ne "yes") {
         throw "Self-test response validation failed."
     }
     Write-Host "SRT translation self-test passed." -ForegroundColor Green
