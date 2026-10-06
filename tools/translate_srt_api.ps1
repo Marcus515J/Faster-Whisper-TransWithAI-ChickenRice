@@ -45,7 +45,7 @@ function Parse-Srt([string]$Text) {
 
         $sourceText = (($lines[2..($lines.Count - 1)]) -join "`n").Trim()
         if (-not $sourceText) {
-            throw "Empty source subtitle at index $indexValue"
+            throw "Empty subtitle at index $indexValue"
         }
 
         $entries.Add([pscustomobject]@{
@@ -126,8 +126,7 @@ function Get-PlainTextFromSecureString([Security.SecureString]$Secure) {
 }
 
 function Resolve-ApiSettings {
-    $scriptDir = Split-Path $MyInvocation.MyCommand.Path -Parent
-    $configPath = Join-Path $scriptDir "translation_api_config.json"
+    $configPath = Join-Path $PSScriptRoot "translation_api_config.json"
 
     if (Test-Path $configPath) {
         try {
@@ -192,11 +191,11 @@ function Convert-TranslationResponse([string]$Content, [object[]]$Targets) {
         if ($seen.ContainsKey($id)) {
             throw "Model returned duplicate id $id."
         }
-        $seen[$id] = $true
-
         if ($null -eq $item.zh) {
             throw "Model response for id $id has no zh field."
         }
+
+        $seen[$id] = $true
         $result[$id] = ([string]$item.zh).Trim()
     }
 
@@ -251,6 +250,7 @@ Rules:
     if ($null -eq $response.choices -or $response.choices.Count -lt 1) {
         throw "API response has no choices."
     }
+
     $content = [string]$response.choices[0].message.content
     if (-not $content) {
         throw "API response content is empty."
@@ -264,14 +264,18 @@ function Build-Srt([object[]]$Entries, [hashtable]$Translations) {
         if (-not $Translations.ContainsKey([int]$entry.id)) {
             throw "Missing translation for id $($entry.id)."
         }
+
         $zh = [string]$Translations[[int]$entry.id]
+        if (-not $zh) {
+            $zh = [char]0x200B
+        }
         $blocks.Add("$($entry.index_line)`r`n$($entry.timestamp)`r`n$zh") | Out-Null
     }
     return ($blocks -join "`r`n`r`n") + "`r`n"
 }
 
 function Assert-TimelineLocked([object[]]$SourceEntries, [string]$OutputText) {
-    $translatedEntries = Parse-Srt $OutputText
+    $translatedEntries = @(Parse-Srt $OutputText)
     if ($translatedEntries.Count -ne $SourceEntries.Count) {
         throw "Output entry count changed."
     }
@@ -289,7 +293,8 @@ function Invoke-SelfTest {
     $sample = "1`r`n00:00:01,000 --> 00:00:02,500`r`nこんにちは`r`n`r`n2`r`n00:00:03,000 --> 00:00:04,000`r`nはい`r`n"
     $entries = @(Parse-Srt $sample)
     if ($entries.Count -ne 2) { throw "Self-test parse count failed." }
-    $translations = @{1 = "你好"; 2 = "嗯"}
+
+    $translations = @{1 = "你好"; 2 = ""}
     $output = Build-Srt $entries $translations
     Assert-TimelineLocked $entries $output
     if ($output -notmatch '00:00:01,000 --> 00:00:02,500' -or $output -notmatch '你好') {
@@ -298,7 +303,9 @@ function Invoke-SelfTest {
 
     $response = '[{"id":1,"zh":"你好"},{"id":2,"zh":"嗯"}]'
     $parsed = Convert-TranslationResponse $response $entries
-    if ($parsed[1] -ne "你好" -or $parsed[2] -ne "嗯") { throw "Self-test response validation failed." }
+    if ($parsed[1] -ne "你好" -or $parsed[2] -ne "嗯") {
+        throw "Self-test response validation failed."
+    }
     Write-Host "SRT translation self-test passed." -ForegroundColor Green
 }
 
