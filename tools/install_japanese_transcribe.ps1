@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$InstallRoot = "H:\0H\翻译\transwithai\1.10.1-transcribe",
+    [string]$InstallRoot = "",
     [ValidateSet("auto", "cu118", "cu122", "cu128")]
     [string]$Variant = "auto",
     [switch]$KeepArchive
@@ -17,6 +17,11 @@ $ExpectedSha256 = @{
     cu118 = "612f3eb04dbad3a6c891eeb5198b66a6af0953934794e50d9a2367d19bfdbc88"
     cu122 = "5552d4b731c60e5aa60267182bdb9ffce02db7debe290e445b048aa1ec4c8f5b"
     cu128 = "4b19595f7363730085aacbfe563f3467313e0c95fe83abe66eff9c6d1e1c9ee9"
+}
+
+if (-not $InstallRoot) {
+    $translatedFolder = ([char]0x7FFB).ToString() + ([char]0x8BD1).ToString()
+    $InstallRoot = Join-Path (Join-Path (Join-Path "H:\0H" $translatedFolder) "transwithai") "1.10.1-transcribe"
 }
 
 function Write-Utf8NoBom {
@@ -38,7 +43,7 @@ function Install-SrtLauncher {
         Write-Utf8NoBom -Path $configPath -Text $configText
     }
 
-    $launcherPath = Join-Path $Root "运行(日文转录SRT)(GPU).bat"
+    $launcherPath = Join-Path $Root "run_japanese_srt_gpu.bat"
     $launcher = @'
 @echo off
 chcp 65001 >nul
@@ -49,7 +54,7 @@ if "%~1"=="" goto prompt_input
 goto end
 
 :prompt_input
-echo 请将音视频文件拖到此窗口，然后按回车:
+echo Drag audio/video files into this window, then press Enter:
 set "input_files="
 set /p "input_files="
 if defined input_files goto run_input
@@ -60,7 +65,7 @@ goto no_input
 goto end
 
 :no_input
-echo 未提供输入文件。
+echo No input file was provided.
 
 :end
 pause
@@ -76,9 +81,11 @@ function Test-InstalledPackage {
     if (-not (Test-Path -LiteralPath $infer -PathType Leaf)) { return $false }
     if (-not (Test-Path -LiteralPath $models -PathType Container)) { return $false }
 
-    $mainWeights = Get-ChildItem -LiteralPath $models -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '\.(bin|safetensors)$' }
-    return ($null -ne $mainWeights -and $mainWeights.Count -gt 0)
+    $mainWeights = @(
+        Get-ChildItem -LiteralPath $models -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.(bin|safetensors)$' }
+    )
+    return ($mainWeights.Count -gt 0)
 }
 
 function Resolve-CudaVariant {
@@ -89,17 +96,17 @@ function Resolve-CudaVariant {
         $nvidiaSmi = Get-Command "nvidia-smi" -ErrorAction SilentlyContinue
     }
     if (-not $nvidiaSmi) {
-        throw "未找到 nvidia-smi。请安装 NVIDIA 驱动，或用 -Variant cu118/cu122/cu128 手动指定版本。"
+        throw "nvidia-smi was not found. Install/update the NVIDIA driver or pass -Variant cu118/cu122/cu128."
     }
 
     $smiText = (& $nvidiaSmi.Source 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $smiText -notmatch 'CUDA Version:\s*(\d+)\.(\d+)') {
-        throw "无法从 nvidia-smi 判断 CUDA 版本。可用 -Variant cu118/cu122/cu128 手动指定。"
+        throw "Could not determine the CUDA version from nvidia-smi. Pass -Variant cu118/cu122/cu128."
     }
 
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
-    $cuda = [version]::new($major, $minor)
+    $cuda = [version]("{0}.{1}" -f $major, $minor)
 
     if ($cuda -ge [version]"12.8") { return "cu128" }
     if ($cuda -ge [version]"12.2") { return "cu122" }
@@ -108,15 +115,15 @@ function Resolve-CudaVariant {
 
 if (Test-InstalledPackage -Root $InstallRoot) {
     Install-SrtLauncher -Root $InstallRoot
-    Write-Host "✅ 日文转录版已经安装：$InstallRoot"
-    Write-Host "✅ 已确认启动器只输出 SRT：运行(日文转录SRT)(GPU).bat"
+    Write-Host "Japanese transcribe package is already installed: $InstallRoot"
+    Write-Host "SRT-only launcher is ready: run_japanese_srt_gpu.bat"
     exit 0
 }
 
 if (Test-Path -LiteralPath $InstallRoot) {
     $existing = Get-ChildItem -LiteralPath $InstallRoot -Force -ErrorAction SilentlyContinue
     if ($existing) {
-        throw "目标目录已有内容但不是完整的日文转录版：$InstallRoot`n请先移走该目录后再运行，脚本不会自动覆盖。"
+        throw "Target directory is not empty and is not a complete transcribe install: $InstallRoot. Move/remove it before retrying."
     }
 }
 
@@ -126,7 +133,7 @@ $expectedHash = $ExpectedSha256[$selectedVariant]
 $url = "$WorkerBase/$archiveName"
 
 $parent = Split-Path -Parent $InstallRoot
-if (-not $parent) { throw "无法确定安装目录的父路径：$InstallRoot" }
+if (-not $parent) { throw "Could not resolve the parent directory for: $InstallRoot" }
 New-Item -ItemType Directory -Path $parent -Force | Out-Null
 
 $downloadDir = Join-Path $parent "_downloads"
@@ -134,24 +141,24 @@ New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
 $archivePath = Join-Path $downloadDir $archiveName
 $extractPath = "$InstallRoot.extracting"
 
-Write-Host "检测到版本：$selectedVariant"
-Write-Host "安装目录：$InstallRoot"
+Write-Host "Selected package: $selectedVariant"
+Write-Host "Install directory: $InstallRoot"
 
 $needDownload = $true
 if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
-    Write-Host "发现已有下载文件，正在校验..."
+    Write-Host "Existing archive found; checking SHA-256..."
     $existingHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($existingHash -eq $expectedHash) {
-        Write-Host "✅ 已有下载文件校验通过，直接使用。"
+        Write-Host "Existing archive passed SHA-256 verification."
         $needDownload = $false
     } else {
-        Write-Host "已有下载文件校验失败，重新下载。"
+        Write-Host "Existing archive failed verification; downloading again."
         Remove-Item -LiteralPath $archivePath -Force
     }
 }
 
 if ($needDownload) {
-    Write-Host "正在下载官方 v1.10.1 日文转录完整包..."
+    Write-Host "Downloading the v1.10.1 Japanese transcribe package..."
     $bits = Get-Command "Start-BitsTransfer" -ErrorAction SilentlyContinue
     if ($bits) {
         Start-BitsTransfer -Source $url -Destination $archivePath -DisplayName "ChickenRice Japanese Transcribe"
@@ -160,13 +167,13 @@ if ($needDownload) {
     }
 }
 
-Write-Host "正在校验 SHA-256..."
+Write-Host "Verifying SHA-256..."
 $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expectedHash) {
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-    throw "下载文件 SHA-256 校验失败。文件已删除，请重新运行。"
+    throw "SHA-256 verification failed. The downloaded archive was deleted; run the installer again."
 }
-Write-Host "✅ SHA-256 校验通过。"
+Write-Host "SHA-256 verification passed."
 
 try {
     if (Test-Path -LiteralPath $extractPath) {
@@ -174,18 +181,18 @@ try {
     }
     New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
 
-    Write-Host "正在解压..."
+    Write-Host "Extracting..."
     $tar = Get-Command "tar.exe" -ErrorAction SilentlyContinue
     if (-not $tar) { $tar = Get-Command "tar" -ErrorAction SilentlyContinue }
     if ($tar) {
         & $tar.Source -xf $archivePath -C $extractPath
-        if ($LASTEXITCODE -ne 0) { throw "tar 解压失败，退出代码：$LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "tar extraction failed with exit code $LASTEXITCODE" }
     } else {
         Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
     }
 
     if (-not (Test-InstalledPackage -Root $extractPath)) {
-        throw "解压后的程序结构不完整：未找到 infer.exe 或主日文模型权重。"
+        throw "Extracted package is incomplete: infer.exe or the main Japanese model weights are missing."
     }
 
     Install-SrtLauncher -Root $extractPath
@@ -200,10 +207,10 @@ try {
     }
 
     Write-Host ""
-    Write-Host "✅ 日文转录版安装完成：$InstallRoot"
-    Write-Host "✅ 使用专用日文模型：TransWithAI/whisper-ja-1.5B-ct2"
-    Write-Host "✅ 只输出 SRT，不生成 VTT/LRC"
-    Write-Host "✅ 启动文件：运行(日文转录SRT)(GPU).bat"
+    Write-Host "Japanese transcribe package installed: $InstallRoot"
+    Write-Host "Model: TransWithAI/whisper-ja-1.5B-ct2"
+    Write-Host "Output format: SRT only"
+    Write-Host "Launcher: run_japanese_srt_gpu.bat"
 } catch {
     if (Test-Path -LiteralPath $extractPath) {
         Remove-Item -LiteralPath $extractPath -Recurse -Force -ErrorAction SilentlyContinue
