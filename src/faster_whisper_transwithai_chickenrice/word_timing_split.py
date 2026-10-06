@@ -23,6 +23,7 @@ class WordTimingSplitOptions:
     pause_threshold_s: float = 0.35
     min_duration_s: float = 0.8
     min_display_duration_s: float = 0.6
+    end_hold_s: float = 0.5
     split_on_punctuation: bool = True
     punctuation: str = "。！？!?"
 
@@ -69,6 +70,7 @@ def parse_word_timing_split_options(value: Any) -> WordTimingSplitOptions:
             0.0,
             float(value.get("min_display_duration_s", defaults.min_display_duration_s)),
         ),
+        end_hold_s=max(0.0, float(value.get("end_hold_s", defaults.end_hold_s))),
         split_on_punctuation=_coerce_bool(
             value.get("split_on_punctuation"), default=defaults.split_on_punctuation
         ),
@@ -163,8 +165,6 @@ def _rebalance_short_text_pieces(pieces: list[str]) -> list[str]:
         if not current_compact or not previous_compact:
             continue
 
-        # If the previous subtitle ends in a one-character token (for example
-        # "好难受 好" / "舒服"), move that token forward.
         trailing = _trailing_token(previous)
         if trailing is not None:
             prefix, token = trailing
@@ -173,9 +173,6 @@ def _rebalance_short_text_pieces(pieces: list[str]) -> list[str]:
                 result[index] = f"{token}{current}".strip()
                 continue
 
-        # A one-character tail such as "呢" is rarely useful on its own. Move a
-        # small suffix from the previous piece forward so the tail remains
-        # readable without merging the two subtitle time ranges.
         if len(current_compact) == 1 and len(previous_compact) >= 6:
             move_chars = 2
             compact_seen = 0
@@ -310,7 +307,6 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
 
     flush()
 
-    # Avoid a tiny final fragment caused only by crossing the target duration.
     if len(groups) >= 2 and options.min_duration_s > 0:
         tail = groups[-1]
         previous_group = groups[-2]
@@ -343,13 +339,15 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     ]
 
 
-def _apply_minimum_display_duration(
+def _apply_display_timing(
     segments: list[Any], options: WordTimingSplitOptions
 ) -> list[SubtitleSegment]:
-    """Extend extremely short subtitles when there is free timeline space.
+    """Keep subtitle starts precise while avoiding premature disappearance.
 
-    Extension never overlaps the following subtitle and never moves the start
-    earlier, so it cannot bridge a silence before the spoken line.
+    Word-level timestamps are reliable for starts but their final word end can be
+    slightly early. Each subtitle therefore gets a small configurable tail hold.
+    The hold is always clamped to the next subtitle start, so it cannot create
+    overlaps or turn into a long trailing-silence display.
     """
 
     result: list[SubtitleSegment] = []
@@ -358,13 +356,17 @@ def _apply_minimum_display_duration(
         end = float(segment.end)
         text = str(segment.text).strip()
 
-        if options.min_display_duration_s > 0 and end - start < options.min_display_duration_s:
-            desired_end = start + options.min_display_duration_s
-            if index + 1 < len(segments):
-                next_start = float(segments[index + 1].start)
-                desired_end = min(desired_end, next_start)
-            end = max(end, desired_end)
+        desired_end = end
+        if options.end_hold_s > 0:
+            desired_end = max(desired_end, end + options.end_hold_s)
+        if options.min_display_duration_s > 0:
+            desired_end = max(desired_end, start + options.min_display_duration_s)
 
+        if index + 1 < len(segments):
+            next_start = float(segments[index + 1].start)
+            desired_end = min(desired_end, next_start)
+
+        end = max(end, desired_end)
         result.append(SubtitleSegment(start=start, end=end, text=text))
 
     return result
@@ -375,7 +377,7 @@ def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOpt
     for segment in segments:
         split_segments.extend(split_segment_by_words(segment, options))
 
-    yield from _apply_minimum_display_duration(split_segments, options)
+    yield from _apply_display_timing(split_segments, options)
 
 
 def _patch_transcribe_class(cls: Any) -> bool:
