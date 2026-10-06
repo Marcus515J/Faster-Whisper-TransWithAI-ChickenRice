@@ -11,12 +11,14 @@ from .injection import (
     uninject_vad,
     with_vad_injection,
 )
+from .subtitle_refine_patch import install_subtitle_refine_patch
 from .vad_manager import VadModelManager, WhisperVadModel
 from .word_timing_split import install_word_timing_split_patch
 
 # Install the optional word-timestamp splitter at package import time.
 # It is inert unless generation_config passes word_timing_split.enabled=true.
 install_word_timing_split_patch()
+install_subtitle_refine_patch()
 
 __version__ = "0.1.0"
 
