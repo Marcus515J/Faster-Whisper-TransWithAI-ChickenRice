@@ -1,89 +1,41 @@
 {
-    // 可以在这里控制各种生成字幕的参数, 下面这个链接里的参数都可以控制
-    // You can control various subtitle generation parameters here, all parameters in the link below can be controlled
-    // https://github.com/SYSTRAN/faster-whisper/blob/dea24cbcc6cbef23ff599a63be0bbb647a0b23d6/faster_whisper/transcribe.py#L733
+    // 已通过 30 分钟样本回归测试的字幕切分配置。
+    // Validated subtitle timing/splitting configuration.
 
-    // Whisper任务：translate = 翻译输出，transcribe = 原文转写
-    // Whisper task: translate = translated output, transcribe = same-language transcript
     "task": "translate",
+    "vad_filter": true,
 
-    // VAD 参数设置 (使用改进的 whisper_vad 模型)
-    // VAD parameters (using improved whisper_vad model)
     "vad_parameters": {
-        // VAD检测阈值 (0.3-0.7, 推荐0.5)
-        // 太大会导致漏翻, 太小可能会导致时间轴不准或文本质量下降(幻听)
-        // VAD detection threshold (0.3-0.7, recommended 0.5)
-        // Too high will cause missed translations, too low may cause timeline inaccuracy or text quality degradation (hallucinations)
         "threshold": 0.5,
-
-        // 最小语音持续时间 (毫秒)
-        // Minimum speech duration (milliseconds)
         "min_speech_duration_ms": 300,
-
-        // 最小静音持续时间 (毫秒)
-        // Minimum silence duration (milliseconds)
         "min_silence_duration_ms": 100,
-
-        // 语音前后填充时间 (毫秒)
-        // Speech padding before and after (milliseconds)
         "speech_pad_ms": 200,
     },
 
-    // 避免时间轴向前偏移过长的问题
-    // Avoid excessive forward shift of timeline
     "max_initial_timestamp": 30,
-
     "repetition_penalty": 1.1,
 
-    // 词级时间轴二次切分：保留 faster-whisper 的 word timestamps，
-    // 再按停顿、标点和最大时长把过粗的 Whisper segment 拆成真正独立字幕。
-    // Word-level subtitle splitting: use faster-whisper word timestamps to split
-    // coarse Whisper segments by pauses, punctuation and maximum duration.
+    // 用 faster-whisper 的词级时间戳拆分过粗的 Whisper segment。
+    // Word timings choose split points; original decoded text is preserved.
     "word_timing_split": {
         "enabled": true,
-
-        // 单条字幕目标最大时长（秒）。超出时按最近的词边界拆分，不截断文字。
-        // Maximum subtitle duration in seconds. Splits on word boundaries; text is never truncated.
         "max_duration_s": 5.0,
-
-        // 相邻词之间出现这么长的停顿时允许切开（秒）。
-        // Split when the silence between adjacent words reaches this threshold (seconds).
         "pause_threshold_s": 0.35,
-
-        // 避免生成过碎的短字幕；达到该时长后才优先按停顿/标点切分。
-        // Avoid tiny fragments; pause/punctuation splitting is preferred after this duration.
         "min_duration_s": 0.8,
-
-        // 极短字幕在后方有空闲时间时，至少延长到该显示时长；绝不压到下一条字幕。
-        // Extend extremely short subtitles into free timeline space up to this minimum display duration.
         "min_display_duration_s": 0.6,
-
         "split_on_punctuation": true,
         "punctuation": "。！？!?",
     },
 
-    // 智能VAD切分：先用外层VAD选择安全的连续音频块，再在每个块内启用 faster-whisper 内部VAD
-    // Smart VAD split: outer VAD chooses safe contiguous chunks, then faster-whisper internal VAD runs inside each chunk
-    "smart_split_with_vad": true,
+    // 本轮验证中关闭 Smart VAD chunking，避免额外分块改变字幕边界。
+    "smart_split_with_vad": false,
+    "target_chunk_duration_s": 20,
 
-    // 每个智能切分块的目标时长（秒），最大30秒
-    // Target duration for each smart split chunk (seconds), capped at 30 seconds
-    "target_chunk_duration_s": 30,
-
-    // 字幕后处理：合并重复/重叠片段，避免字幕时间轴过长
-    // Subtitle post-processing: merge repeated/overlapping segments and avoid overly long timelines
+    // 禁用旧的 segment merge / max_duration 时间硬截断。
+    // Word-level splitting now owns subtitle segmentation.
     "segment_merge": {
-        // 是否启用合并
-        // Enable merging
-        "enabled": true,
-
-        // 只有当相邻两段之间的间隔 <= max_gap_ms 时才允许合并（避免跨长静音误合并）
-        // Only merge if the gap between adjacent segments is <= max_gap_ms (avoid merging across long silences)
-        "max_gap_ms": 2000,
-
-        // 这里不再依赖它做字幕切分；词级切分会在更前面正确拆文字和时间轴。
-        // This is no longer used as a subtitle splitter; word-level splitting happens earlier.
-        "max_duration_ms": 20000,
+        "enabled": false,
+        "max_gap_ms": 500,
+        "max_duration_ms": 0,
     },
-
 }
