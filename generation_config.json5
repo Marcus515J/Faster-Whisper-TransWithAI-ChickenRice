@@ -1,18 +1,21 @@
 {
-    // 长样本回归后的质量优先配置。
+    // 原音频 + 30 分钟样本对照后的质量优先配置。
     // Quality-first subtitle timing and recognition configuration.
 
     "task": "translate",
     "vad_filter": true,
 
-    // 提高解码质量，并减少静音/气声上的幻觉文字。
+    // 保留 beam search，但恢复失败回退，避免 temperature=0 卡死在重复循环里。
     "beam_size": 5,
-    "temperature": 0.0,
+    "temperature": [0.0, 0.2, 0.4, 0.6],
+    "compression_ratio_threshold": 2.0,
     "condition_on_previous_text": false,
+    "no_repeat_ngram_size": 3,
     "log_prob_threshold": -0.8,
     "no_speech_threshold": 0.5,
     "hallucination_silence_threshold": 1.0,
 
+    // VAD 只做第一层过滤；不再继续激进提高阈值，避免漏掉轻声对白。
     "vad_parameters": {
         "threshold": 0.55,
         "min_speech_duration_ms": 300,
@@ -23,8 +26,8 @@
     "max_initial_timestamp": 30,
     "repetition_penalty": 1.1,
 
-    // 用 faster-whisper 的词级时间戳拆分过粗的 Whisper segment。
-    // 开始时间保持词级精度；结束时间额外保留 1.0 秒，且绝不压到下一条字幕。
+    // 开始时间使用词级时间戳；结束时间优先跟随实际 VAD 语音段结束。
+    // 只有无法匹配 VAD 语音段时，才使用 1 秒固定尾部作为兜底。
     "word_timing_split": {
         "enabled": true,
         "max_duration_s": 5.0,
