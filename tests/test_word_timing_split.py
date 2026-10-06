@@ -9,6 +9,7 @@ from faster_whisper_transwithai_chickenrice.word_timing_split import (
     WordTimingSplitOptions,
     parse_word_timing_split_options,
     split_segment_by_words,
+    split_segments_by_words,
 )
 
 
@@ -35,15 +36,21 @@ class WordTimingSplitTests(unittest.TestCase):
 
         self.assertEqual(result, [segment])
 
-    def test_mismatched_word_text_returns_original_segment(self) -> None:
+    def test_low_similarity_alignment_refuses_to_split(self) -> None:
         segment = make_segment(
             0.0,
-            3.0,
-            "完整文本",
-            [make_word(0.0, 1.0, "完整"), make_word(1.1, 2.0, "文")],
+            4.0,
+            "完全不同",
+            [make_word(0.0, 1.0, "ABC"), make_word(2.0, 3.0, "DEF")],
+        )
+        options = WordTimingSplitOptions(
+            enabled=True,
+            pause_threshold_s=0.35,
+            min_duration_s=0.5,
+            split_on_punctuation=False,
         )
 
-        result = split_segment_by_words(segment, WordTimingSplitOptions(enabled=True))
+        result = split_segment_by_words(segment, options)
 
         self.assertEqual(result, [segment])
 
@@ -123,6 +130,85 @@ class WordTimingSplitTests(unittest.TestCase):
         self.assertEqual([item.text for item in result], ["ABCDE"])
         self.assertAlmostEqual(result[0].end - result[0].start, 5.28)
 
+    def test_rebalances_one_character_token_to_next_piece(self) -> None:
+        segment = make_segment(
+            0.0,
+            5.0,
+            "好难受 好舒服",
+            [
+                make_word(0.0, 1.2, "好难受"),
+                make_word(1.2, 2.6, " 好"),
+                make_word(3.1, 4.6, "舒服"),
+            ],
+        )
+        options = WordTimingSplitOptions(
+            enabled=True,
+            pause_threshold_s=0.35,
+            min_duration_s=0.8,
+            split_on_punctuation=False,
+        )
+
+        result = split_segment_by_words(segment, options)
+
+        self.assertEqual([item.text for item in result], ["好难受", "好舒服"])
+        self.assertEqual(_join_compact(result), "好难受好舒服")
+
+    def test_rebalances_single_character_tail_with_suffix(self) -> None:
+        segment = make_segment(
+            0.0,
+            8.0,
+            "这里也有很多地方呢",
+            [
+                make_word(0.0, 4.7, "这里也有很多地方"),
+                make_word(5.2, 7.8, "呢"),
+            ],
+        )
+        options = WordTimingSplitOptions(
+            enabled=True,
+            max_duration_s=5.0,
+            pause_threshold_s=0.35,
+            min_duration_s=0.8,
+            split_on_punctuation=False,
+        )
+
+        result = split_segment_by_words(segment, options)
+
+        self.assertEqual([item.text for item in result], ["这里也有很多", "地方呢"])
+        self.assertEqual(_join_compact(result), "这里也有很多地方呢")
+
+    def test_extends_extremely_short_subtitle_into_free_space(self) -> None:
+        segments = [
+            make_segment(0.0, 0.08, "插进来了", [make_word(0.0, 0.08, "插进来了")]),
+            make_segment(2.0, 2.5, "下一句", [make_word(2.0, 2.5, "下一句")]),
+        ]
+        options = WordTimingSplitOptions(
+            enabled=True,
+            min_display_duration_s=0.6,
+            split_on_punctuation=False,
+        )
+
+        result = list(split_segments_by_words(segments, options))
+
+        self.assertAlmostEqual(result[0].start, 0.0)
+        self.assertAlmostEqual(result[0].end, 0.6)
+        self.assertEqual(result[0].text, "插进来了")
+
+    def test_minimum_display_duration_never_overlaps_next_subtitle(self) -> None:
+        segments = [
+            make_segment(0.0, 0.08, "第一句", [make_word(0.0, 0.08, "第一句")]),
+            make_segment(0.3, 0.8, "第二句", [make_word(0.3, 0.8, "第二句")]),
+        ]
+        options = WordTimingSplitOptions(
+            enabled=True,
+            min_display_duration_s=0.6,
+            split_on_punctuation=False,
+        )
+
+        result = list(split_segments_by_words(segments, options))
+
+        self.assertAlmostEqual(result[0].end, 0.3)
+        self.assertLessEqual(result[0].end, result[1].start)
+
     def test_splits_on_punctuation_after_minimum_duration(self) -> None:
         segment = make_segment(
             0.0,
@@ -148,6 +234,7 @@ class WordTimingSplitTests(unittest.TestCase):
                 "max_duration_s": 4.5,
                 "pause_threshold_s": 0.4,
                 "min_duration_s": 1.0,
+                "min_display_duration_s": 0.7,
                 "split_on_punctuation": False,
             }
         )
@@ -156,7 +243,12 @@ class WordTimingSplitTests(unittest.TestCase):
         self.assertEqual(options.max_duration_s, 4.5)
         self.assertEqual(options.pause_threshold_s, 0.4)
         self.assertEqual(options.min_duration_s, 1.0)
+        self.assertEqual(options.min_display_duration_s, 0.7)
         self.assertFalse(options.split_on_punctuation)
+
+
+def _join_compact(segments) -> str:
+    return "".join("".join(item.text.split()) for item in segments)
 
 
 if __name__ == "__main__":
