@@ -1,9 +1,11 @@
 name: Build and Release with Conda
 
+# Release pipeline: builds every Windows variant and publishes a GitHub Release.
+# Triggered on version tags, or manually when release_version is provided.
+# Plain build-and-check on pushes/PRs is handled by ci.yml, which reuses the
+# same build workflow.
 on:
   push:
-    branches:
-      - 'release/v1.10.1'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -19,56 +21,71 @@ on:
         default: false
 
 jobs:
+  # Build every Windows variant and run the executable smoke (e2e) checks,
+  # then upload each build as an artifact for the publish jobs below.
+  # Shared with ci.yml (which calls the same workflow with upload_artifacts: false).
   build-windows:
     name: Build Windows
     uses: ./.github/workflows/build-windows.yml
+    # upload_artifacts defaults to true, so each variant is uploaded as an
+    # artifact that the create-release / upload-* jobs download in this same run.
 
+  # Create the initial GitHub release
   create-release:
     name: Create GitHub Release
     needs: [build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release/v1.10.1' || inputs.release_version != ''
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_version != ''
     permissions:
       contents: write
+    outputs:
+      release_created: ${{ steps.create.outputs.release_created }}
 
     steps:
     - name: Checkout code for release notes
       uses: actions/checkout@v4
+      with:
+        sparse-checkout: |
+          RELEASE_NOTES_CN.md
+        sparse-checkout-cone-mode: false
 
-    - name: Prepare release body
+    - name: Read release body
       id: read_body
-      shell: bash
       run: |
-        echo 'body<<EOF' >> "$GITHUB_OUTPUT"
-        echo 'Faster-Whisper-TransWithAI-ChickenRice v1.10.1' >> "$GITHUB_OUTPUT"
-        echo '' >> "$GITHUB_OUTPUT"
-        echo '- 修复多句话被塞进一条字幕的问题。' >> "$GITHUB_OUTPUT"
-        echo '- 使用词级时间戳按停顿、标点和目标时长拆分字幕。' >> "$GITHUB_OUTPUT"
-        echo '- 修复极短字幕、单字尾巴和错误断词。' >> "$GITHUB_OUTPUT"
-        echo '- 默认配置已切换为本次 30 分钟样本验证通过的配置。' >> "$GITHUB_OUTPUT"
-        echo 'EOF' >> "$GITHUB_OUTPUT"
+        if [ -f "RELEASE_NOTES_CN.md" ]; then
+          echo 'body<<EOF' >> $GITHUB_OUTPUT
+          cat RELEASE_NOTES_CN.md >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        else
+          echo 'body=Release created by GitHub Actions' >> $GITHUB_OUTPUT
+        fi
 
     - name: Create empty placeholder file for initial release
       run: |
-        echo "Binary files are being uploaded by this workflow." > placeholder.txt
+        echo "This release contains large binary files. Files are being uploaded..." > placeholder.txt
 
     - name: Create Release with placeholder
+      id: create
       uses: ading2210/gh-large-releases@v1
       with:
         repository: ${{ github.repository }}
-        tag_name: v1.10.1
-        name: v1.10.1
+        tag_name: ${{ inputs.release_version || github.ref_name }}
+        name: ${{ inputs.release_version || github.ref_name }}
         body: ${{ steps.read_body.outputs.body }}
         draft: false
         prerelease: false
         files: placeholder.txt
         token: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Set output
+      run: echo "release_created=true" >> $GITHUB_OUTPUT
+
+  # Parallel upload matrix - each row handles one build/model artifact.
   upload-assets:
     name: Upload ${{ matrix.build.label }} ${{ matrix.model.label }}
     needs: [create-release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release/v1.10.1' || inputs.release_version != ''
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_version != ''
     permissions:
       contents: write
     strategy:
@@ -108,13 +125,17 @@ jobs:
       run: |
         archive_name="faster_whisper_transwithai_windows_${{ matrix.build.suffix }}-${{ matrix.model.suffix }}.zip"
         cd artifact
+        echo "Creating archive for ${{ matrix.build.label }} ${{ matrix.model.label }} variant..."
+        # Using compression level 5 for faster builds (was level 9).
+        # Level 5 provides good balance between speed and compression ratio.
         zip -5 -r -q "../$archive_name" .
         cd ..
+        echo "Archive created: $(ls -lh "$archive_name" | awk '{print $5}')"
 
     - name: Upload to release with large file support
       uses: ading2210/gh-large-releases@v1
       with:
         repository: ${{ github.repository }}
-        tag_name: v1.10.1
+        tag_name: ${{ inputs.release_version || github.ref_name }}
         files: faster_whisper_transwithai_windows_${{ matrix.build.suffix }}-${{ matrix.model.suffix }}.zip
         token: ${{ secrets.GITHUB_TOKEN }}

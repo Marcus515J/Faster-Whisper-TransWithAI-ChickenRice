@@ -1,0 +1,28 @@
+name: Publish v1.10.1
+
+on:
+  push:
+    branches:
+      - 'release/v1.10.1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v1.10.1
+          target_commitish: main
+          name: v1.10.1
+          body: |
+            Faster-Whisper-TransWithAI-ChickenRice v1.10.1
+
+            - 修复多句话被塞进一条字幕的问题。
+            - 使用词级时间戳按停顿、标点和目标时长拆分字幕。
+            - 修复极短字幕、单字尾巴和错误断词。
+            - 默认配置已切换为本次 30 分钟样本验证通过的配置。
+          draft: false
+          prerelease: false
