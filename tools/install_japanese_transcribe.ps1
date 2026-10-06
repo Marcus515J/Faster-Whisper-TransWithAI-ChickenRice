@@ -133,6 +133,71 @@ function Resolve-CudaVariant {
     throw "Could not determine CUDA compatibility from nvidia-smi. Pass -Variant cu118/cu122/cu128."
 }
 
+function Invoke-StreamDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceUrl,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    # BITS requires byte-range support and fails against the release merge proxy.
+    # Prefer curl on supported Windows versions because it follows redirects and
+    # streams large files directly to disk without buffering the archive in RAM.
+    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    if ($curl) {
+        Write-Host "Downloading with curl.exe..."
+        & $curl.Source -L --fail --retry 3 --retry-delay 2 --connect-timeout 30 --output $Destination $SourceUrl
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+            return
+        }
+
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        Write-Host "curl.exe failed; falling back to .NET streaming download."
+    }
+
+    Add-Type -AssemblyName System.Net.Http
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromHours(6)
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+
+    try {
+        Write-Host "Downloading with .NET streaming HTTP..."
+        $response = $client.GetAsync(
+            $SourceUrl,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode()
+
+        $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $outputStream = [System.IO.File]::Open(
+            $Destination,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+
+        $buffer = New-Object byte[] (1024 * 1024)
+        while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outputStream.Write($buffer, 0, $read)
+        }
+    } catch {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        throw
+    } finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
+        if ($response) { $response.Dispose() }
+        if ($client) { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+    }
+
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        throw "Download completed without creating the expected archive: $Destination"
+    }
+}
+
 if (Test-InstalledPackage -Root $InstallRoot) {
     Install-SrtLauncher -Root $InstallRoot
     Write-Host "Japanese transcribe package is already installed: $InstallRoot"
@@ -179,12 +244,7 @@ if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
 
 if ($needDownload) {
     Write-Host "Downloading the v1.10.1 Japanese transcribe package..."
-    $bits = Get-Command "Start-BitsTransfer" -ErrorAction SilentlyContinue
-    if ($bits) {
-        Start-BitsTransfer -Source $url -Destination $archivePath -DisplayName "ChickenRice Japanese Transcribe"
-    } else {
-        Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
-    }
+    Invoke-StreamDownload -SourceUrl $url -Destination $archivePath
 }
 
 Write-Host "Verifying SHA-256..."
