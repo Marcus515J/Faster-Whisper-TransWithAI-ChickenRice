@@ -7,7 +7,7 @@ param(
     [string]$Model = "HY-MT2-7B-Q8_0",
     [int]$BatchSize = 20,
     [int]$MaxRetries = 2,
-    [int]$ShortSegmentChars = 8,
+    [int]$ShortSegmentChars = 0,
     [string]$LlamaServerPath = "H:\0AI\llama.cpp\llama-server.exe",
     [string]$LocalModelPath = "H:\0AI\models\HY-MT2-7B-Q8_0.gguf",
     [int]$ServerStartupTimeoutSec = 180,
@@ -21,6 +21,9 @@ $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
 $script:ManagedServerProcess = $null
 $script:ManagedServerStdout = ""
 $script:ManagedServerStderr = ""
+$script:TermJaSeishi = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
+$script:TermZhSperm = ([string][char]0x7CBE) + ([string][char]0x5B50)
+$script:TerminologyLine = "$($script:TermJaSeishi) translates to $($script:TermZhSperm)"
 
 function Read-Utf8Text([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
@@ -314,6 +317,9 @@ function Invoke-DelimiterBatch([object[]]$Targets, [string]$Endpoint) {
 Please accurately translate the following Japanese subtitle segments into Simplified Chinese.
 You must retain the exact same number of delimiters in the translation. Strictly do not omit, escape, translate, alter, or move $($script:Delimiter).
 
+Reference the following translation:
+$($script:TerminologyLine)
+
 Strict requirements:
 1. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
 2. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
@@ -341,6 +347,9 @@ $sourceText
 function Invoke-SingleTarget([object]$Target, [string]$Endpoint) {
     $prompt = @"
 Translate the following Japanese subtitle into Simplified Chinese. Note that you should only output the translated result without any additional explanation.
+
+Reference the following translation:
+$($script:TerminologyLine)
 
 Strict requirements:
 1. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
@@ -462,10 +471,8 @@ function Invoke-SelfTest {
         throw "Self-test source quote preservation failed."
     }
 
-    $shortJa = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
-    $shortTarget = [pscustomobject]@{ ja = $shortJa }
-    if ($ShortSegmentChars -gt 0 -and -not (Test-ShouldTranslateSingle $shortTarget)) {
-        throw "Self-test short-segment isolation failed."
+    if ($script:TerminologyLine -ne ($script:TermJaSeishi + " translates to " + $script:TermZhSperm)) {
+        throw "Self-test terminology construction failed."
     }
 
     Write-Host "Hy-MT2 translator self-test passed." -ForegroundColor Green
@@ -523,7 +530,7 @@ Write-Host "Source: $InputPath"
 Write-Host "Output: $OutputPath"
 Write-Host "Model: $Model"
 Write-Host "Entries: $($script:Entries.Count)"
-Write-Host "Mode: Hy-MT2 delimiter-preserving translation with short-segment isolation and automatic split fallback"
+Write-Host "Mode: Hy-MT2 delimiter-preserving translation with terminology guidance and automatic split fallback"
 if ($ShortSegmentChars -gt 0) {
     Write-Host "Short subtitles: <= $ShortSegmentChars non-whitespace character(s) translated independently."
 }
