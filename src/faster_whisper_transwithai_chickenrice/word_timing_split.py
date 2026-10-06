@@ -23,7 +23,7 @@ class WordTimingSplitOptions:
     pause_threshold_s: float = 0.35
     min_duration_s: float = 0.8
     min_display_duration_s: float = 0.6
-    end_hold_s: float = 0.5
+    end_hold_s: float = 1.0
     split_on_punctuation: bool = True
     punctuation: str = "。！？!?"
 
@@ -339,45 +339,119 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
     ]
 
 
-def _apply_display_timing(
-    segments: list[Any], options: WordTimingSplitOptions
-) -> list[SubtitleSegment]:
-    """Keep subtitle starts precise while avoiding premature disappearance.
+def _parse_clip_timestamps(value: Any) -> list[tuple[float, float]]:
+    """Normalize faster-whisper clip timestamps into speech spans."""
 
-    Word-level timestamps are reliable for starts but their final word end can be
-    slightly early. Each subtitle therefore gets a small configurable tail hold.
-    The hold is always clamped to the next subtitle start, so it cannot create
-    overlaps or turn into a long trailing-silence display.
+    spans: list[tuple[float, float]] = []
+    if value is None:
+        return spans
+
+    if isinstance(value, str):
+        if value.strip() in {"", "0"}:
+            return spans
+        try:
+            values = [float(item.strip()) for item in value.split(",") if item.strip()]
+        except ValueError:
+            return spans
+        for index in range(0, len(values) - 1, 2):
+            start, end = values[index], values[index + 1]
+            if end > start:
+                spans.append((start, end))
+        return spans
+
+    if isinstance(value, (list, tuple)):
+        if value and isinstance(value[0], dict):
+            for item in value:
+                try:
+                    start = float(item["start"])
+                    end = float(item["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if end > start:
+                    spans.append((start, end))
+            return spans
+
+        try:
+            values = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return spans
+        for index in range(0, len(values) - 1, 2):
+            start, end = values[index], values[index + 1]
+            if end > start:
+                spans.append((start, end))
+
+    return spans
+
+
+def _matching_speech_span_end(
+    start: float,
+    end: float,
+    speech_spans: list[tuple[float, float]],
+) -> float | None:
+    """Return the VAD speech end associated with a subtitle, when available."""
+
+    tolerance = 0.08
+    for span_start, span_end in speech_spans:
+        if span_start - tolerance <= end <= span_end + tolerance:
+            return span_end
+        if span_start - tolerance <= start <= span_end + tolerance:
+            return span_end
+    return None
+
+
+def _apply_display_timing(
+    segments: list[Any],
+    options: WordTimingSplitOptions,
+    speech_spans: list[tuple[float, float]] | None = None,
+) -> list[SubtitleSegment]:
+    """Keep starts precise and make subtitle ends follow real speech activity.
+
+    If VAD speech spans are available, a subtitle remains visible until the next
+    subtitle starts inside the same speech span, or until that VAD speech span
+    actually ends. The fixed end hold is only a fallback when no VAD span can be
+    matched. This avoids both premature disappearance and long stale subtitles.
     """
 
+    speech_spans = speech_spans or []
     result: list[SubtitleSegment] = []
+
     for index, segment in enumerate(segments):
         start = float(segment.start)
         end = float(segment.end)
         text = str(segment.text).strip()
+        next_start = float(segments[index + 1].start) if index + 1 < len(segments) else None
+        span_end = _matching_speech_span_end(start, end, speech_spans)
 
         desired_end = end
-        if options.end_hold_s > 0:
+        if span_end is not None:
+            if next_start is not None and next_start <= span_end + 0.08:
+                desired_end = max(desired_end, next_start)
+            else:
+                desired_end = max(desired_end, span_end)
+        elif options.end_hold_s > 0:
             desired_end = max(desired_end, end + options.end_hold_s)
+
         if options.min_display_duration_s > 0:
             desired_end = max(desired_end, start + options.min_display_duration_s)
 
-        if index + 1 < len(segments):
-            next_start = float(segments[index + 1].start)
+        if next_start is not None:
             desired_end = min(desired_end, next_start)
 
-        end = max(end, desired_end)
-        result.append(SubtitleSegment(start=start, end=end, text=text))
+        result.append(SubtitleSegment(start=start, end=max(end, desired_end), text=text))
 
     return result
 
 
-def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOptions):
+def split_segments_by_words(
+    segments: Iterable[Any],
+    options: WordTimingSplitOptions,
+    speech_spans: list[tuple[float, float]] | None = None,
+):
     split_segments: list[Any] = []
     for segment in segments:
         split_segments.extend(split_segment_by_words(segment, options))
 
-    yield from _apply_display_timing(split_segments, options)
+    yield from _apply_display_timing(split_segments, options, speech_spans)
 
 
 def _patch_transcribe_class(cls: Any) -> bool:
@@ -392,9 +466,10 @@ def _patch_transcribe_class(cls: Any) -> bool:
         if not options.enabled:
             return original(self, *args, **kwargs)
 
+        speech_spans = _parse_clip_timestamps(kwargs.get("clip_timestamps"))
         kwargs["word_timestamps"] = True
         segments, info = original(self, *args, **kwargs)
-        return split_segments_by_words(segments, options), info
+        return split_segments_by_words(segments, options, speech_spans), info
 
     patched._chickenrice_word_timing_split = True
     cls.transcribe = patched
