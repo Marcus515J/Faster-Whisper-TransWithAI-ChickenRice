@@ -1,19 +1,27 @@
-"""Optional word-timestamp based subtitle splitting.
+"""Optional word-timestamp based subtitle splitting and conservative ASR refinement.
 
 The splitter requests faster-whisper word timestamps only when explicitly
 enabled, then converts coarse Whisper segments into subtitle-sized segments.
 Word timestamps decide *where* to split, while the final subtitle text is sliced
 from the original Whisper segment text so decoded text is never lost.
+
+For Japanese transcription, an optional conservative refinement pass can retry
+only suspicious coarse segments and align subtitle ends to the existing VAD
+speech spans. Normal segments are left untouched.
 """
 
 from __future__ import annotations
 
+import logging
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import wraps
 from types import SimpleNamespace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,10 +36,39 @@ class WordTimingSplitOptions:
 
 
 @dataclass(frozen=True)
+class SubtitleRefineOptions:
+    enabled: bool = False
+    transcribe_only: bool = True
+    retry_suspicious: bool = True
+    retry_max_segments: int = 24
+    retry_padding_s: float = 0.25
+    retry_max_source_duration_s: float = 12.0
+    retry_beam_size: int = 5
+    retry_temperatures: tuple[float, ...] = (0.0, 0.2, 0.4)
+    retry_hallucination_silence_threshold: float = 0.8
+    suspicious_logprob_threshold: float = -0.75
+    suspicious_compression_ratio_threshold: float = 2.2
+    suspicious_no_speech_threshold: float = 0.55
+    suspicious_chars_per_second: float = 8.0
+    suspicious_repetition_ratio: float = 0.72
+    drop_no_speech_threshold: float = 0.75
+    drop_logprob_threshold: float = -0.6
+    align_end_to_vad: bool = True
+    max_end_extension_s: float = 0.8
+    vad_match_tolerance_s: float = 0.08
+
+
+@dataclass(frozen=True)
 class SubtitleSegment:
     start: float
     end: float
     text: str
+
+
+@dataclass(frozen=True)
+class VadSpan:
+    start: float
+    end: float
 
 
 def _coerce_bool(value: Any, *, default: bool = False) -> bool:
@@ -74,8 +111,211 @@ def parse_word_timing_split_options(value: Any) -> WordTimingSplitOptions:
     )
 
 
+def _parse_temperatures(value: Any, defaults: tuple[float, ...]) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)):
+        return defaults
+    temperatures = tuple(float(item) for item in value)
+    return temperatures or defaults
+
+
+def parse_subtitle_refine_options(value: Any) -> SubtitleRefineOptions:
+    defaults = SubtitleRefineOptions()
+
+    if value is None:
+        return defaults
+    if isinstance(value, bool):
+        return SubtitleRefineOptions(enabled=value)
+    if not isinstance(value, dict):
+        return defaults
+
+    return SubtitleRefineOptions(
+        enabled=_coerce_bool(value.get("enabled"), default=True),
+        transcribe_only=_coerce_bool(value.get("transcribe_only"), default=defaults.transcribe_only),
+        retry_suspicious=_coerce_bool(value.get("retry_suspicious"), default=defaults.retry_suspicious),
+        retry_max_segments=max(0, int(value.get("retry_max_segments", defaults.retry_max_segments))),
+        retry_padding_s=max(0.0, float(value.get("retry_padding_s", defaults.retry_padding_s))),
+        retry_max_source_duration_s=max(
+            0.5,
+            float(value.get("retry_max_source_duration_s", defaults.retry_max_source_duration_s)),
+        ),
+        retry_beam_size=max(1, int(value.get("retry_beam_size", defaults.retry_beam_size))),
+        retry_temperatures=_parse_temperatures(value.get("retry_temperatures"), defaults.retry_temperatures),
+        retry_hallucination_silence_threshold=max(
+            0.0,
+            float(
+                value.get(
+                    "retry_hallucination_silence_threshold",
+                    defaults.retry_hallucination_silence_threshold,
+                )
+            ),
+        ),
+        suspicious_logprob_threshold=float(
+            value.get("suspicious_logprob_threshold", defaults.suspicious_logprob_threshold)
+        ),
+        suspicious_compression_ratio_threshold=max(
+            0.0,
+            float(
+                value.get(
+                    "suspicious_compression_ratio_threshold",
+                    defaults.suspicious_compression_ratio_threshold,
+                )
+            ),
+        ),
+        suspicious_no_speech_threshold=min(
+            1.0,
+            max(
+                0.0,
+                float(value.get("suspicious_no_speech_threshold", defaults.suspicious_no_speech_threshold)),
+            ),
+        ),
+        suspicious_chars_per_second=max(
+            1.0,
+            float(value.get("suspicious_chars_per_second", defaults.suspicious_chars_per_second)),
+        ),
+        suspicious_repetition_ratio=min(
+            1.0,
+            max(
+                0.0,
+                float(value.get("suspicious_repetition_ratio", defaults.suspicious_repetition_ratio)),
+            ),
+        ),
+        drop_no_speech_threshold=min(
+            1.0,
+            max(
+                0.0,
+                float(value.get("drop_no_speech_threshold", defaults.drop_no_speech_threshold)),
+            ),
+        ),
+        drop_logprob_threshold=float(value.get("drop_logprob_threshold", defaults.drop_logprob_threshold)),
+        align_end_to_vad=_coerce_bool(value.get("align_end_to_vad"), default=defaults.align_end_to_vad),
+        max_end_extension_s=max(
+            0.0,
+            float(value.get("max_end_extension_s", defaults.max_end_extension_s)),
+        ),
+        vad_match_tolerance_s=max(
+            0.0,
+            float(value.get("vad_match_tolerance_s", defaults.vad_match_tolerance_s)),
+        ),
+    )
+
+
 def _compact_text(text: Any) -> str:
     return "".join(str(text or "").split())
+
+
+def _quality_text(text: Any) -> str:
+    compact = _compact_text(text)
+    return "".join(char for char in compact if not unicodedata.category(char).startswith(("P", "Z")))
+
+
+def _float_attr(segment: Any, name: str) -> float | None:
+    value = getattr(segment, name, None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _segment_duration_s(segment: Any) -> float:
+    return max(0.0, float(segment.end) - float(segment.start))
+
+
+def _max_ngram_repetition_ratio(text: str) -> float:
+    if len(text) < 12:
+        return 0.0
+
+    best = 0.0
+    for size in range(1, min(4, len(text)) + 1):
+        counts: dict[str, int] = {}
+        for index in range(0, len(text) - size + 1):
+            ngram = text[index : index + size]
+            counts[ngram] = counts.get(ngram, 0) + 1
+        if not counts:
+            continue
+        max_count = max(counts.values())
+        if max_count < 3:
+            continue
+        best = max(best, min(1.0, (max_count * size) / len(text)))
+    return best
+
+
+def is_suspicious_segment(segment: Any, options: SubtitleRefineOptions) -> bool:
+    text = _quality_text(getattr(segment, "text", ""))
+    if not text:
+        return False
+
+    avg_logprob = _float_attr(segment, "avg_logprob")
+    compression_ratio = _float_attr(segment, "compression_ratio")
+    no_speech_prob = _float_attr(segment, "no_speech_prob")
+
+    if compression_ratio is not None and compression_ratio >= options.suspicious_compression_ratio_threshold:
+        return True
+    if avg_logprob is not None and avg_logprob <= options.suspicious_logprob_threshold:
+        return True
+    if (
+        no_speech_prob is not None
+        and no_speech_prob >= options.suspicious_no_speech_threshold
+        and (avg_logprob is None or avg_logprob <= -0.45)
+    ):
+        return True
+
+    duration_s = max(0.05, _segment_duration_s(segment))
+    chars_per_second = len(text) / duration_s
+    if len(text) >= 6 and chars_per_second >= options.suspicious_chars_per_second:
+        return True
+
+    repetition_ratio = _max_ngram_repetition_ratio(text)
+    return repetition_ratio >= options.suspicious_repetition_ratio
+
+
+def _strong_non_speech(segment: Any, options: SubtitleRefineOptions) -> bool:
+    avg_logprob = _float_attr(segment, "avg_logprob")
+    no_speech_prob = _float_attr(segment, "no_speech_prob")
+    compression_ratio = _float_attr(segment, "compression_ratio")
+
+    if (
+        no_speech_prob is not None
+        and no_speech_prob >= options.drop_no_speech_threshold
+        and (avg_logprob is None or avg_logprob <= options.drop_logprob_threshold)
+    ):
+        return True
+    if avg_logprob is not None and avg_logprob <= -1.2:
+        return True
+    return compression_ratio is not None and compression_ratio >= 3.0
+
+
+def _segment_quality_score(segment: Any, options: SubtitleRefineOptions) -> float:
+    avg_logprob = _float_attr(segment, "avg_logprob")
+    compression_ratio = _float_attr(segment, "compression_ratio")
+    no_speech_prob = _float_attr(segment, "no_speech_prob")
+
+    score = avg_logprob if avg_logprob is not None else -0.5
+    if compression_ratio is not None:
+        score -= max(0.0, compression_ratio - 1.8) * 0.35
+    if no_speech_prob is not None:
+        score -= max(0.0, no_speech_prob - 0.25) * 0.35
+
+    text = _quality_text(getattr(segment, "text", ""))
+    duration_s = max(0.05, _segment_duration_s(segment))
+    chars_per_second = len(text) / duration_s if text else 0.0
+    score -= max(0.0, chars_per_second - options.suspicious_chars_per_second) * 0.03
+    score -= _max_ngram_repetition_ratio(text) * 0.2
+    return score
+
+
+def _segments_quality_score(segments: list[Any], options: SubtitleRefineOptions) -> float:
+    if not segments:
+        return float("-inf")
+
+    weighted_score = 0.0
+    total_weight = 0.0
+    for segment in segments:
+        weight = max(0.1, _segment_duration_s(segment))
+        weighted_score += _segment_quality_score(segment, options) * weight
+        total_weight += weight
+    return weighted_score / total_weight
 
 
 def _normalize_word(word: Any, segment_start: float, segment_end: float):
@@ -161,8 +401,6 @@ def _rebalance_short_text_pieces(pieces: list[str]) -> list[str]:
         if not current_compact or not previous_compact:
             continue
 
-        # If the previous subtitle ends in a one-character token (for example
-        # "好难受 好" / "舒服"), move that token forward.
         trailing = _trailing_token(previous)
         if trailing is not None:
             prefix, token = trailing
@@ -171,9 +409,6 @@ def _rebalance_short_text_pieces(pieces: list[str]) -> list[str]:
                 result[index] = f"{token}{current}".strip()
                 continue
 
-        # A one-character tail such as "呢" is rarely useful on its own. Move a
-        # small suffix from the previous piece forward so the tail remains
-        # readable without merging the two subtitle time ranges.
         if len(current_compact) == 1 and len(previous_compact) >= 6:
             move_chars = 2
             compact_seen = 0
@@ -300,7 +535,6 @@ def split_segment_by_words(segment: Any, options: WordTimingSplitOptions) -> lis
 
     flush()
 
-    # Avoid a tiny final fragment caused only by crossing the target duration.
     if len(groups) >= 2 and options.min_duration_s > 0:
         tail = groups[-1]
         previous_group = groups[-2]
@@ -366,6 +600,238 @@ def split_segments_by_words(segments: Iterable[Any], options: WordTimingSplitOpt
     yield from _apply_minimum_display_duration(split_segments, options)
 
 
+def _parse_vad_spans(clip_timestamps: Any) -> list[VadSpan]:
+    if not isinstance(clip_timestamps, (list, tuple)):
+        return []
+
+    spans: list[VadSpan] = []
+    if clip_timestamps and isinstance(clip_timestamps[0], dict):
+        for item in clip_timestamps:
+            try:
+                start = float(item["start"])
+                end = float(item["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if end > start:
+                spans.append(VadSpan(start=start, end=end))
+        return spans
+
+    values: list[float] = []
+    for item in clip_timestamps:
+        try:
+            values.append(float(item))
+        except (TypeError, ValueError):
+            return []
+
+    for index in range(0, len(values) - 1, 2):
+        start = values[index]
+        end = values[index + 1]
+        if end > start:
+            spans.append(VadSpan(start=start, end=end))
+    return spans
+
+
+def align_segment_ends_to_vad(
+    segments: Iterable[Any],
+    clip_timestamps: Any,
+    options: SubtitleRefineOptions,
+) -> list[SubtitleSegment]:
+    items = list(segments)
+    spans = _parse_vad_spans(clip_timestamps)
+    if not options.align_end_to_vad or options.max_end_extension_s <= 0 or not spans:
+        return [
+            SubtitleSegment(start=float(item.start), end=float(item.end), text=str(item.text).strip()) for item in items
+        ]
+
+    result: list[SubtitleSegment] = []
+    for index, segment in enumerate(items):
+        start = float(segment.start)
+        end = float(segment.end)
+        text = str(segment.text).strip()
+        next_start = float(items[index + 1].start) if index + 1 < len(items) else None
+
+        best_span: VadSpan | None = None
+        best_overlap = 0.0
+        for span in spans:
+            if span.start > end + options.vad_match_tolerance_s:
+                break
+            if span.end < start - options.vad_match_tolerance_s:
+                continue
+
+            overlap = max(0.0, min(end, span.end) - max(start, span.start))
+            end_inside = span.start - options.vad_match_tolerance_s <= end <= span.end + options.vad_match_tolerance_s
+            if (overlap > best_overlap or (best_span is None and end_inside)) and span.end > end:
+                best_span = span
+                best_overlap = overlap
+
+        if best_span is not None:
+            desired_end = min(best_span.end, end + options.max_end_extension_s)
+            if next_start is not None:
+                desired_end = min(desired_end, next_start)
+            end = max(end, desired_end)
+
+        result.append(SubtitleSegment(start=start, end=end, text=text))
+
+    return result
+
+
+def _offset_retry_segment(segment: Any, offset_s: float, source_start: float, source_end: float):
+    start = max(source_start, offset_s + float(segment.start))
+    end = min(source_end, offset_s + float(segment.end))
+    if end <= start:
+        return None
+
+    words = []
+    for word in getattr(segment, "words", None) or []:
+        word_start = getattr(word, "start", None)
+        word_end = getattr(word, "end", None)
+        word_text = str(getattr(word, "word", ""))
+        if word_start is None or word_end is None or not word_text.strip():
+            continue
+        adjusted_start = max(start, offset_s + float(word_start))
+        adjusted_end = min(end, offset_s + float(word_end))
+        if adjusted_end > adjusted_start:
+            words.append(SimpleNamespace(start=adjusted_start, end=adjusted_end, word=word_text))
+
+    return SimpleNamespace(
+        start=start,
+        end=end,
+        text=str(getattr(segment, "text", "")).strip(),
+        avg_logprob=getattr(segment, "avg_logprob", None),
+        compression_ratio=getattr(segment, "compression_ratio", None),
+        no_speech_prob=getattr(segment, "no_speech_prob", None),
+        temperature=getattr(segment, "temperature", None),
+        words=words or None,
+    )
+
+
+def _retry_segment(
+    transcribe_owner: Any,
+    original_transcribe: Any,
+    audio_input: Any,
+    segment: Any,
+    base_kwargs: dict[str, Any],
+    options: SubtitleRefineOptions,
+) -> list[Any] | None:
+    if (
+        isinstance(audio_input, (str, bytes))
+        or not hasattr(audio_input, "__len__")
+        or not hasattr(audio_input, "__getitem__")
+    ):
+        return None
+    if not hasattr(transcribe_owner, "feature_extractor"):
+        return None
+
+    source_start = float(segment.start)
+    source_end = float(segment.end)
+    source_duration = max(0.0, source_end - source_start)
+    if source_duration <= 0 or source_duration > options.retry_max_source_duration_s:
+        return None
+
+    sampling_rate = int(getattr(transcribe_owner.feature_extractor, "sampling_rate", 16_000))
+    total_samples = len(audio_input)
+    total_duration = total_samples / sampling_rate
+    window_start = max(0.0, source_start - options.retry_padding_s)
+    window_end = min(total_duration, source_end + options.retry_padding_s)
+    start_sample = max(0, min(total_samples, int(round(window_start * sampling_rate))))
+    end_sample = max(start_sample, min(total_samples, int(round(window_end * sampling_rate))))
+    if end_sample <= start_sample:
+        return None
+
+    retry_audio = audio_input[start_sample:end_sample]
+    retry_kwargs = dict(base_kwargs)
+    retry_kwargs.pop("clip_timestamps", None)
+    retry_kwargs.pop("vad_parameters", None)
+    retry_kwargs.pop("audio", None)
+    retry_kwargs["vad_filter"] = False
+    retry_kwargs["word_timestamps"] = True
+    retry_kwargs["condition_on_previous_text"] = False
+    retry_kwargs["beam_size"] = options.retry_beam_size
+    retry_kwargs["temperature"] = list(options.retry_temperatures)
+    retry_kwargs["compression_ratio_threshold"] = 2.4
+    retry_kwargs["log_prob_threshold"] = -1.0
+    retry_kwargs["no_speech_threshold"] = 0.6
+    retry_kwargs["hallucination_silence_threshold"] = options.retry_hallucination_silence_threshold
+    retry_kwargs["initial_prompt"] = None
+    retry_kwargs["prefix"] = None
+
+    try:
+        retry_iter, _retry_info = original_transcribe(transcribe_owner, retry_audio, **retry_kwargs)
+        retry_segments = list(retry_iter)
+    except Exception as exc:
+        logger.debug("Suspicious segment retry failed: %s", exc)
+        return None
+
+    adjusted = []
+    for retry_segment in retry_segments:
+        candidate = _offset_retry_segment(retry_segment, window_start, source_start, source_end)
+        if candidate is not None and candidate.text:
+            adjusted.append(candidate)
+    return adjusted
+
+
+def refine_suspicious_segments(
+    transcribe_owner: Any,
+    original_transcribe: Any,
+    audio_input: Any,
+    segments: Iterable[Any],
+    base_kwargs: dict[str, Any],
+    options: SubtitleRefineOptions,
+) -> list[Any]:
+    items = list(segments)
+    if not options.retry_suspicious or options.retry_max_segments <= 0:
+        return items
+
+    result: list[Any] = []
+    retried = 0
+    replaced = 0
+    dropped = 0
+
+    for segment in items:
+        if retried >= options.retry_max_segments or not is_suspicious_segment(segment, options):
+            result.append(segment)
+            continue
+
+        retry_segments = _retry_segment(
+            transcribe_owner,
+            original_transcribe,
+            audio_input,
+            segment,
+            base_kwargs,
+            options,
+        )
+        if retry_segments is None:
+            result.append(segment)
+            continue
+
+        retried += 1
+        if not retry_segments:
+            if _strong_non_speech(segment, options):
+                dropped += 1
+                continue
+            result.append(segment)
+            continue
+
+        retry_is_suspicious = any(is_suspicious_segment(item, options) for item in retry_segments)
+        original_score = _segment_quality_score(segment, options)
+        retry_score = _segments_quality_score(retry_segments, options)
+
+        if not retry_is_suspicious or retry_score >= original_score + 0.05:
+            result.extend(retry_segments)
+            replaced += 1
+        else:
+            result.append(segment)
+
+    if retried:
+        logger.info(
+            "Subtitle refine: retried %s suspicious segment(s), replaced %s, dropped %s",
+            retried,
+            replaced,
+            dropped,
+        )
+    return result
+
+
 def _patch_transcribe_class(cls: Any) -> bool:
     original = getattr(cls, "transcribe", None)
     if original is None or getattr(original, "_chickenrice_word_timing_split", False):
@@ -373,14 +839,47 @@ def _patch_transcribe_class(cls: Any) -> bool:
 
     @wraps(original)
     def patched(self, *args, **kwargs):
-        raw_options = kwargs.pop("word_timing_split", None)
-        options = parse_word_timing_split_options(raw_options)
-        if not options.enabled:
+        raw_split_options = kwargs.pop("word_timing_split", None)
+        raw_refine_options = kwargs.pop("subtitle_refine", None)
+        split_options = parse_word_timing_split_options(raw_split_options)
+        refine_options = parse_subtitle_refine_options(raw_refine_options)
+
+        task = str(kwargs.get("task", "transcribe")).strip().lower()
+        refine_enabled = refine_options.enabled and (not refine_options.transcribe_only or task == "transcribe")
+
+        if not split_options.enabled and not refine_enabled:
             return original(self, *args, **kwargs)
 
-        kwargs["word_timestamps"] = True
+        if split_options.enabled:
+            kwargs["word_timestamps"] = True
+
         segments, info = original(self, *args, **kwargs)
-        return split_segments_by_words(segments, options), info
+        items = list(segments)
+
+        if refine_enabled and refine_options.retry_suspicious:
+            audio_input = args[0] if args else kwargs.get("audio")
+            items = refine_suspicious_segments(
+                self,
+                original,
+                audio_input,
+                items,
+                kwargs,
+                refine_options,
+            )
+
+        if split_options.enabled:
+            processed: list[Any] = list(split_segments_by_words(items, split_options))
+        else:
+            processed = items
+
+        if refine_enabled and refine_options.align_end_to_vad:
+            processed = align_segment_ends_to_vad(
+                processed,
+                kwargs.get("clip_timestamps"),
+                refine_options,
+            )
+
+        return iter(processed), info
 
     patched._chickenrice_word_timing_split = True  # type: ignore[attr-defined]
     cls.transcribe = patched
