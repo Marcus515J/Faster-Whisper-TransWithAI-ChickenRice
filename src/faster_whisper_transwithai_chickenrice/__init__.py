@@ -12,6 +12,11 @@ from .injection import (
     with_vad_injection,
 )
 from .vad_manager import VadModelManager, WhisperVadModel
+from .word_timing_split import install_word_timing_split_patch
+
+# Install the optional word-timestamp splitter at package import time.
+# It is inert unless generation_config passes word_timing_split.enabled=true.
+install_word_timing_split_patch()
 
 __version__ = "0.1.0"
 
