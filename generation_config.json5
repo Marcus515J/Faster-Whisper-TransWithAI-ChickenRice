@@ -27,6 +27,36 @@
         "punctuation": "。！？!?",
     },
 
+    // 只在日文转录阶段启用：正常字幕不重跑，只复核可疑的 Whisper coarse segment。
+    // A retry that still looks worse is discarded; empty retries only delete
+    // source segments when the original decoder metadata already strongly says non-speech.
+    "subtitle_refine": {
+        "enabled": true,
+        "transcribe_only": true,
+        "retry_suspicious": true,
+        "retry_max_segments": 24,
+        "retry_padding_s": 0.25,
+        "retry_max_source_duration_s": 12.0,
+        "retry_beam_size": 5,
+        "retry_temperatures": [0.0, 0.2, 0.4],
+        "retry_hallucination_silence_threshold": 0.8,
+
+        "suspicious_logprob_threshold": -0.75,
+        "suspicious_compression_ratio_threshold": 2.2,
+        "suspicious_no_speech_threshold": 0.55,
+        "suspicious_chars_per_second": 8.0,
+        "suspicious_repetition_ratio": 0.72,
+
+        "drop_no_speech_threshold": 0.75,
+        "drop_logprob_threshold": -0.6,
+
+        // 结束时间只延长到当前增强 VAD 的真实 speech span 尾部，
+        // 最多 0.8 秒且永远不越过下一条字幕。
+        "align_end_to_vad": true,
+        "max_end_extension_s": 0.8,
+        "vad_match_tolerance_s": 0.08,
+    },
+
     // 本轮验证中关闭 Smart VAD chunking，避免额外分块改变字幕边界。
     "smart_split_with_vad": false,
     "target_chunk_duration_s": 20,
