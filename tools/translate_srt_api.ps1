@@ -167,10 +167,15 @@ function Strip-CodeFence([string]$Text) {
 function Convert-TranslationResponse([string]$Content, [object[]]$Targets) {
     $jsonText = Strip-CodeFence $Content
     try {
-        $items = @($jsonText | ConvertFrom-Json)
+        $parsed = $jsonText | ConvertFrom-Json
     }
     catch {
         throw "Model response was not valid JSON."
+    }
+
+    $items = @()
+    foreach ($parsedItem in $parsed) {
+        $items += $parsedItem
     }
 
     if ($items.Count -ne $Targets.Count) {
@@ -302,8 +307,8 @@ function Invoke-SelfTest {
     }
 
     $response = '[{"id":1,"zh":"hello"},{"id":2,"zh":"yes"}]'
-    $parsed = Convert-TranslationResponse $response $entries
-    if ($parsed[1] -ne "hello" -or $parsed[2] -ne "yes") {
+    $parsedResponse = Convert-TranslationResponse $response $entries
+    if ($parsedResponse[1] -ne "hello" -or $parsedResponse[2] -ne "yes") {
         throw "Self-test response validation failed."
     }
     Write-Host "SRT translation self-test passed." -ForegroundColor Green
