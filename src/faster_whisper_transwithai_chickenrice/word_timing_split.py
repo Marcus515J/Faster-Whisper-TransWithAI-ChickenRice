@@ -382,7 +382,7 @@ def _patch_transcribe_class(cls: Any) -> bool:
         segments, info = original(self, *args, **kwargs)
         return split_segments_by_words(segments, options), info
 
-    patched._chickenrice_word_timing_split = True
+    setattr(patched, "_chickenrice_word_timing_split", True)
     cls.transcribe = patched
     return True
 
