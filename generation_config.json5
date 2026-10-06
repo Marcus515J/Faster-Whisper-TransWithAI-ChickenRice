@@ -54,6 +54,10 @@
         // Avoid tiny fragments; pause/punctuation splitting is preferred after this duration.
         "min_duration_s": 0.8,
 
+        // 极短字幕在后方有空闲时间时，至少延长到该显示时长；绝不压到下一条字幕。
+        // Extend extremely short subtitles into free timeline space up to this minimum display duration.
+        "min_display_duration_s": 0.6,
+
         "split_on_punctuation": true,
         "punctuation": "。！？!?",
     },
