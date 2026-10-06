@@ -36,6 +36,36 @@ $Downloads = @(
         Url = "$RepoRaw/src/faster_whisper_transwithai_chickenrice/word_timing_split.py"
         Temp = Join-Path $TempDir "word_timing_split.py"
         Destination = $WordSplitPath
+    },
+    @{
+        Name = "运行(翻译)(CPU).bat"
+        Url = "$RepoRaw/运行(翻译)(CPU).bat"
+        Temp = Join-Path $TempDir "运行(翻译)(CPU).bat"
+        Destination = Join-Path $InstallRoot "运行(翻译)(CPU).bat"
+    },
+    @{
+        Name = "运行(翻译)(GPU).bat"
+        Url = "$RepoRaw/运行(翻译)(GPU).bat"
+        Temp = Join-Path $TempDir "运行(翻译)(GPU).bat"
+        Destination = Join-Path $InstallRoot "运行(翻译)(GPU).bat"
+    },
+    @{
+        Name = "运行(翻译)(GPU)(输出到当前文件夹).bat"
+        Url = "$RepoRaw/运行(翻译)(GPU)(输出到当前文件夹).bat"
+        Temp = Join-Path $TempDir "运行(翻译)(GPU)(输出到当前文件夹).bat"
+        Destination = Join-Path $InstallRoot "运行(翻译)(GPU)(输出到当前文件夹).bat"
+    },
+    @{
+        Name = "运行(翻译)(GPU,低显存模式).bat"
+        Url = "$RepoRaw/运行(翻译)(GPU,低显存模式).bat"
+        Temp = Join-Path $TempDir "运行(翻译)(GPU,低显存模式).bat"
+        Destination = Join-Path $InstallRoot "运行(翻译)(GPU,低显存模式).bat"
+    },
+    @{
+        Name = "运行(翻译)(GPU,高显存加速模式).bat"
+        Url = "$RepoRaw/运行(翻译)(GPU,高显存加速模式).bat"
+        Temp = Join-Path $TempDir "运行(翻译)(GPU,高显存加速模式).bat"
+        Destination = Join-Path $InstallRoot "运行(翻译)(GPU,高显存加速模式).bat"
     }
 )
 
@@ -79,6 +109,7 @@ try {
     $configText = Get-Content $Downloads[0].Temp -Raw -Encoding UTF8
     if ($configText -notmatch '"word_timing_split"' -or
         $configText -notmatch '"min_display_duration_s"\s*:\s*0\.6' -or
+        $configText -notmatch '"end_hold_s"\s*:\s*0\.5' -or
         $configText -notmatch '"smart_split_with_vad"\s*:\s*false' -or
         $configText -notmatch '"max_duration_ms"\s*:\s*0') {
         throw "仓库中的 generation_config.json5 未通过安全检查，已停止更新。"
@@ -87,8 +118,17 @@ try {
     $wordText = Get-Content $Downloads[1].Temp -Raw -Encoding UTF8
     if ($wordText -notmatch 'class WordTimingSplitOptions' -or
         $wordText -notmatch 'install_word_timing_split_patch' -or
-        $wordText -notmatch 'min_display_duration_s') {
+        $wordText -notmatch 'min_display_duration_s' -or
+        $wordText -notmatch 'end_hold_s') {
         throw "仓库中的 word_timing_split.py 未通过安全检查，已停止更新。"
+    }
+
+    foreach ($item in $Downloads | Select-Object -Skip 2) {
+        $batText = Get-Content $item.Temp -Raw -Encoding UTF8
+        if ($batText -notmatch '--sub_formats="srt"' -or
+            $batText -match '--sub_formats="[^"]*(vtt|lrc)') {
+            throw "仓库中的 $($item.Name) 不是 SRT-only 配置，已停止更新。"
+        }
     }
 
     foreach ($item in $Downloads) {
@@ -131,14 +171,30 @@ install_word_timing_split_patch()
     $ok =
         ($finalConfig -match '"word_timing_split"') -and
         ($finalConfig -match '"min_display_duration_s"\s*:\s*0\.6') -and
+        ($finalConfig -match '"end_hold_s"\s*:\s*0\.5') -and
         ($finalConfig -match '"smart_split_with_vad"\s*:\s*false') -and
         ($finalConfig -match '"segment_merge"\s*:\s*\{[\s\S]*?"enabled"\s*:\s*false') -and
         ($finalConfig -match '"max_duration_ms"\s*:\s*0') -and
         ($finalWord -match 'install_word_timing_split_patch') -and
+        ($finalWord -match 'end_hold_s') -and
         ($finalInfer -match 'install_word_timing_split_patch')
 
     if (!$ok) {
         throw "更新后的本地文件未通过最终核对。"
+    }
+
+    foreach ($batName in @(
+        "运行(翻译)(CPU).bat",
+        "运行(翻译)(GPU).bat",
+        "运行(翻译)(GPU)(输出到当前文件夹).bat",
+        "运行(翻译)(GPU,低显存模式).bat",
+        "运行(翻译)(GPU,高显存加速模式).bat"
+    )) {
+        $batPath = Join-Path $InstallRoot $batName
+        $batText = Get-Content $batPath -Raw -Encoding UTF8
+        if ($batText -notmatch '--sub_formats="srt"' -or $batText -match '--sub_formats="[^"]*(vtt|lrc)') {
+            throw "$batName 未通过 SRT-only 最终核对。"
+        }
     }
 
     Write-Host ""
@@ -154,6 +210,7 @@ install_word_timing_split_patch()
         }
     }
     Write-Host "✅ 当前本地配置与仓库 main 的字幕方案一致。" -ForegroundColor Green
+    Write-Host "✅ 翻译模式只输出 SRT。" -ForegroundColor Green
 }
 catch {
     Write-Host ""
