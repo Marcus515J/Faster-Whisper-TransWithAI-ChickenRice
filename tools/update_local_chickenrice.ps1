@@ -15,6 +15,7 @@ $PackageDir = Join-Path $InstallRoot "_internal\faster_whisper_transwithai_chick
 $InferPath = Join-Path $PackageDir "infer.py"
 $ConfigPath = Join-Path $InstallRoot "generation_config.json5"
 $WordSplitPath = Join-Path $PackageDir "word_timing_split.py"
+$RefinePatchPath = Join-Path $PackageDir "subtitle_refine_patch.py"
 
 if (!(Test-Path $InstallRoot)) {
     throw "ChickenRice install directory was not found: $InstallRoot"
@@ -41,6 +42,12 @@ $Downloads = @(
         Url = "$RepoRaw/src/faster_whisper_transwithai_chickenrice/word_timing_split.py"
         Temp = Join-Path $TempDir "word_timing_split.py"
         Destination = $WordSplitPath
+    },
+    @{
+        Name = "subtitle_refine_patch.py"
+        Url = "$RepoRaw/src/faster_whisper_transwithai_chickenrice/subtitle_refine_patch.py"
+        Temp = Join-Path $TempDir "subtitle_refine_patch.py"
+        Destination = $RefinePatchPath
     }
 )
 
@@ -83,6 +90,7 @@ try {
 
     $configText = Get-Content $Downloads[0].Temp -Raw -Encoding UTF8
     if ($configText -notmatch '"word_timing_split"' -or
+        $configText -notmatch '"subtitle_refine"' -or
         $configText -notmatch '"min_display_duration_s"\s*:\s*0\.6' -or
         $configText -notmatch '"smart_split_with_vad"\s*:\s*false' -or
         $configText -notmatch '"max_duration_ms"\s*:\s*0') {
@@ -96,6 +104,13 @@ try {
         throw "word_timing_split.py from GitHub failed validation. Update stopped."
     }
 
+    $refineText = Get-Content $Downloads[2].Temp -Raw -Encoding UTF8
+    if ($refineText -notmatch 'install_subtitle_refine_patch' -or
+        $refineText -notmatch 'Subtitle refine: candidates' -or
+        $refineText -notmatch 'align_segment_ends_to_vad') {
+        throw "subtitle_refine_patch.py from GitHub failed validation. Update stopped."
+    }
+
     foreach ($item in $Downloads) {
         $oldHash = Get-HashOrNull $item.Destination
         $newHash = Get-HashOrNull $item.Temp
@@ -107,6 +122,8 @@ try {
     }
 
     $inferText = Get-Content $InferPath -Raw -Encoding UTF8
+    $inferChanged = $false
+
     if ($inferText -notmatch 'install_word_timing_split_patch') {
         $target = 'from .vad_manager import VadConfig, VadModelManager'
         if ($inferText -notmatch [regex]::Escape($target)) {
@@ -121,6 +138,33 @@ from .word_timing_split import install_word_timing_split_patch
 install_word_timing_split_patch()
 "@
         $inferText = $inferText.Replace($target, $replacement.TrimEnd())
+        $inferChanged = $true
+    }
+
+    if ($inferText -notmatch 'install_subtitle_refine_patch') {
+        if (-not $inferChanged) {
+            Backup-File $InferPath "infer.py"
+        }
+
+        $importTarget = 'from .word_timing_split import install_word_timing_split_patch'
+        $callTarget = 'install_word_timing_split_patch()'
+        if ($inferText -notmatch [regex]::Escape($importTarget) -or
+            $inferText -notmatch [regex]::Escape($callTarget)) {
+            throw "infer.py word timing hook is missing; refusing to add refinement hook."
+        }
+
+        $inferText = $inferText.Replace(
+            $importTarget,
+            $importTarget + "`r`nfrom .subtitle_refine_patch import install_subtitle_refine_patch"
+        )
+        $inferText = $inferText.Replace(
+            $callTarget,
+            $callTarget + "`r`ninstall_subtitle_refine_patch()"
+        )
+        $inferChanged = $true
+    }
+
+    if ($inferChanged) {
         [System.IO.File]::WriteAllText(
             $InferPath,
             $inferText,
@@ -131,16 +175,20 @@ install_word_timing_split_patch()
 
     $finalConfig = Get-Content $ConfigPath -Raw -Encoding UTF8
     $finalWord = Get-Content $WordSplitPath -Raw -Encoding UTF8
+    $finalRefine = Get-Content $RefinePatchPath -Raw -Encoding UTF8
     $finalInfer = Get-Content $InferPath -Raw -Encoding UTF8
 
     $ok =
         ($finalConfig -match '"word_timing_split"') -and
+        ($finalConfig -match '"subtitle_refine"') -and
         ($finalConfig -match '"min_display_duration_s"\s*:\s*0\.6') -and
         ($finalConfig -match '"smart_split_with_vad"\s*:\s*false') -and
         ($finalConfig -match '"segment_merge"\s*:\s*\{[\s\S]*?"enabled"\s*:\s*false') -and
         ($finalConfig -match '"max_duration_ms"\s*:\s*0') -and
         ($finalWord -match 'install_word_timing_split_patch') -and
-        ($finalInfer -match 'install_word_timing_split_patch')
+        ($finalRefine -match 'install_subtitle_refine_patch') -and
+        ($finalInfer -match 'install_word_timing_split_patch') -and
+        ($finalInfer -match 'install_subtitle_refine_patch')
 
     if (!$ok) {
         throw "Updated local files failed final validation."
