@@ -7,12 +7,20 @@ param(
     [string]$Model = "HY-MT2-7B-Q8_0",
     [int]$BatchSize = 20,
     [int]$MaxRetries = 2,
+    [int]$ShortSegmentChars = 8,
+    [string]$LlamaServerPath = "H:\0AI\llama.cpp\llama-server.exe",
+    [string]$LocalModelPath = "H:\0AI\models\HY-MT2-7B-Q8_0.gguf",
+    [int]$ServerStartupTimeoutSec = 180,
+    [switch]$UseExistingServer,
     [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
+$script:ManagedServerProcess = $null
+$script:ManagedServerStdout = ""
+$script:ManagedServerStderr = ""
 
 function Read-Utf8Text([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
@@ -105,12 +113,177 @@ function Normalize-Endpoint([string]$Url) {
     return $value + "/chat/completions"
 }
 
+function Test-IsLoopbackUrl([string]$Url) {
+    try {
+        $uri = [uri]$Url
+        return $uri.Host -in @("127.0.0.1", "localhost", "::1")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-HealthEndpoint([string]$Url) {
+    $uri = [uri]$Url
+    return "$($uri.Scheme)://$($uri.Authority)/v1/health"
+}
+
+function Test-HyMt2ServerReady([string]$Url) {
+    try {
+        $response = Invoke-RestMethod -Method Get -Uri (Get-HealthEndpoint $Url) -TimeoutSec 2
+        return ([string]$response.status -eq "ok")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-ServerLogTail {
+    $chunks = New-Object System.Collections.Generic.List[string]
+    foreach ($path in @($script:ManagedServerStderr, $script:ManagedServerStdout)) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            $tail = (Get-Content -LiteralPath $path -Tail 20 -ErrorAction SilentlyContinue | Out-String).Trim()
+            if ($tail) { $chunks.Add($tail) | Out-Null }
+        }
+    }
+    return ($chunks -join "`n")
+}
+
+function Start-ManagedLocalServer([string]$Url) {
+    if (-not (Test-Path -LiteralPath $LlamaServerPath)) {
+        throw "llama-server was not found: $LlamaServerPath"
+    }
+    if (-not (Test-Path -LiteralPath $LocalModelPath)) {
+        throw "Hy-MT2 model was not found: $LocalModelPath"
+    }
+    if (Test-HyMt2ServerReady $Url) {
+        throw "A server is already listening at $Url. Stop it first, or use -UseExistingServer for deliberate debugging."
+    }
+
+    $runtimeDir = Join-Path (Split-Path $LocalModelPath -Parent) ".hymt2-runtime"
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    $runId = [guid]::NewGuid().ToString("N")
+    $script:ManagedServerStdout = Join-Path $runtimeDir ("llama-server-$runId.out.log")
+    $script:ManagedServerStderr = Join-Path $runtimeDir ("llama-server-$runId.err.log")
+
+    $arguments = @(
+        "-m", $LocalModelPath,
+        "-ngl", "999",
+        "-c", "8192",
+        "--host", "127.0.0.1",
+        "--port", "8080"
+    )
+
+    Write-Host "Starting local Hy-MT2 server on demand..."
+    $script:ManagedServerProcess = Start-Process \
+        -FilePath $LlamaServerPath \
+        -ArgumentList $arguments \
+        -WorkingDirectory (Split-Path $LlamaServerPath -Parent) \
+        -WindowStyle Hidden \
+        -RedirectStandardOutput $script:ManagedServerStdout \
+        -RedirectStandardError $script:ManagedServerStderr \
+        -PassThru
+
+    $deadline = (Get-Date).AddSeconds($ServerStartupTimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if ($script:ManagedServerProcess.HasExited) {
+            $tail = Get-ServerLogTail
+            if ($tail) { throw "llama-server exited before becoming ready.`n$tail" }
+            throw "llama-server exited before becoming ready."
+        }
+        if (Test-HyMt2ServerReady $Url) {
+            Write-Host "Local Hy-MT2 server is ready." -ForegroundColor Green
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    $tail = Get-ServerLogTail
+    if ($tail) { throw "Timed out waiting for llama-server after $ServerStartupTimeoutSec second(s).`n$tail" }
+    throw "Timed out waiting for llama-server after $ServerStartupTimeoutSec second(s)."
+}
+
+function Stop-ManagedLocalServer {
+    if ($null -ne $script:ManagedServerProcess) {
+        try {
+            if (-not $script:ManagedServerProcess.HasExited) {
+                $taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+                if ($taskkill) {
+                    & $taskkill.Source /PID $script:ManagedServerProcess.Id /T /F 2>$null | Out-Null
+                    Start-Sleep -Milliseconds 300
+                }
+                if (-not $script:ManagedServerProcess.HasExited) {
+                    Stop-Process -Id $script:ManagedServerProcess.Id -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        finally {
+            Write-Host "Local Hy-MT2 server stopped." -ForegroundColor Green
+            $script:ManagedServerProcess = $null
+        }
+    }
+
+    foreach ($path in @($script:ManagedServerStdout, $script:ManagedServerStderr)) {
+        if ($path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Strip-CodeFence([string]$Text) {
     $value = $Text.Trim()
-    if ($value -match '^```(?:text)?\s*([\s\S]*?)\s*```$') {
+    if ($value -match '^```[^\r\n]*\s*([\s\S]*?)\s*```$') {
         return $matches[1].Trim()
     }
     return $value
+}
+
+function Clean-TranslationText([string]$Text, [string]$SourceText) {
+    $value = (Strip-CodeFence ([string]$Text)).Trim()
+    $value = [regex]::Replace($value, '^[\uFEFF\u200B]+', '')
+    $value = [regex]::Replace($value, '[\uFEFF\u200B]+$', '')
+    $value = $value.Trim()
+
+    $quotePairs = @(
+        [pscustomobject]@{ Open = '"'; Close = '"' },
+        [pscustomobject]@{ Open = "'"; Close = "'" },
+        [pscustomobject]@{ Open = [string][char]0x201C; Close = [string][char]0x201D },
+        [pscustomobject]@{ Open = [string][char]0x2018; Close = [string][char]0x2019 },
+        [pscustomobject]@{ Open = [string][char]0x300C; Close = [string][char]0x300D },
+        [pscustomobject]@{ Open = [string][char]0x300E; Close = [string][char]0x300F }
+    )
+
+    $source = ([string]$SourceText).Trim()
+    $sourceWrapped = $false
+    foreach ($pair in $quotePairs) {
+        if ($source.Length -ge 2 -and $source.StartsWith($pair.Open) -and $source.EndsWith($pair.Close)) {
+            $sourceWrapped = $true
+            break
+        }
+    }
+
+    if (-not $sourceWrapped) {
+        for ($pass = 0; $pass -lt 2; $pass++) {
+            $removed = $false
+            foreach ($pair in $quotePairs) {
+                if ($value.Length -ge 2 -and $value.StartsWith($pair.Open) -and $value.EndsWith($pair.Close)) {
+                    $value = $value.Substring($pair.Open.Length, $value.Length - $pair.Open.Length - $pair.Close.Length).Trim()
+                    $removed = $true
+                    break
+                }
+            }
+            if (-not $removed) { break }
+        }
+    }
+
+    return $value
+}
+
+function Get-VisibleSourceLength([string]$Text) {
+    return ([regex]::Replace(([string]$Text), '\s+', '')).Length
+}
+
+function Test-ShouldTranslateSingle([object]$Target) {
+    if ($ShortSegmentChars -le 0) { return $false }
+    return (Get-VisibleSourceLength ([string]$Target.ja)) -le $ShortSegmentChars
 }
 
 function Invoke-HyMt2Api([string]$Prompt, [string]$Endpoint) {
@@ -139,54 +312,21 @@ function Invoke-HyMt2Api([string]$Prompt, [string]$Endpoint) {
     return Strip-CodeFence $content
 }
 
-function Get-NeighborContext([object[]]$Targets) {
-    $firstId = [int]$Targets[0].id
-    $lastId = [int]$Targets[$Targets.Count - 1].id
-
-    $before = @()
-    $beforeFirst = [Math]::Max(1, $firstId - 3)
-    if ($firstId -gt 1) {
-        $before = @($script:Entries[($beforeFirst - 1)..($firstId - 2)])
-    }
-
-    $after = @()
-    $afterLast = [Math]::Min($script:Entries.Count, $lastId + 3)
-    if ($lastId -lt $script:Entries.Count) {
-        $after = @($script:Entries[$lastId..($afterLast - 1)])
-    }
-
-    return [pscustomobject]@{Before = $before; After = $after}
-}
-
-function Join-ContextText([object[]]$Items) {
-    if ($Items.Count -eq 0) { return "(none)" }
-    return (($Items | ForEach-Object {[string]$_.ja}) -join "`n")
-}
-
 function Invoke-DelimiterBatch([object[]]$Targets, [string]$Endpoint) {
     if ($Targets.Count -lt 2) { throw "Delimiter batch requires at least two targets." }
 
-    $ctx = Get-NeighborContext $Targets
-    $beforeText = Join-ContextText $ctx.Before
-    $afterText = Join-ContextText $ctx.After
     $sourceText = (($Targets | ForEach-Object {[string]$_.ja}) -join ("`n" + $script:Delimiter + "`n"))
 
     $prompt = @"
-Translate the Japanese subtitle segments in [Source Text] into Simplified Chinese. Output only the translated subtitle segments.
+Please accurately translate the following Japanese subtitle segments into Simplified Chinese.
+You must retain the exact same number of delimiters in the translation. Strictly do not omit, escape, translate, alter, or move $($script:Delimiter).
 
 Strict requirements:
-1. Every line that consists only of $($script:Delimiter) is a delimiter. Preserve every delimiter from [Source Text] exactly. Do not omit, escape, translate, alter, or move it.
-2. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
+1. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
+2. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
 3. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
 4. If Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-5. Use [Background Before] and [Background After] only for disambiguation. Do not translate or output background text.
-6. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
-
-[Background Before]
-$beforeText
-
-[Background After]
-$afterText
+5. Output only the translated segments and delimiters. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
 
 [Source Text]
 $sourceText
@@ -200,38 +340,26 @@ $sourceText
 
     $result = @{}
     for ($i = 0; $i -lt $Targets.Count; $i++) {
-        $result[[int]$Targets[$i].id] = ([string]$parts[$i]).Trim()
+        $result[[int]$Targets[$i].id] = Clean-TranslationText ([string]$parts[$i]) ([string]$Targets[$i].ja)
     }
     return $result
 }
 
 function Invoke-SingleTarget([object]$Target, [string]$Endpoint) {
-    $targets = @($Target)
-    $ctx = Get-NeighborContext $targets
-    $beforeText = Join-ContextText $ctx.Before
-    $afterText = Join-ContextText $ctx.After
-
     $prompt = @"
-Translate the Japanese subtitle in [Source Text] into Simplified Chinese. Output only the translated result without any additional explanation.
+Translate the following Japanese subtitle into Simplified Chinese. Note that you should only output the translated result without any additional explanation.
 
 Strict requirements:
-1. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
-2. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-3. Use the background only for disambiguation. Do not translate or output background text.
+1. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
+2. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
+3. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
 4. Do not output labels, markdown, JSON, timestamps, or subtitle indices.
 
-[Background Before]
-$beforeText
-
-[Background After]
-$afterText
-
-[Source Text]
 $([string]$Target.ja)
 "@
 
     $content = Invoke-HyMt2Api $prompt $Endpoint
-    return ([string]$content).Trim()
+    return Clean-TranslationText ([string]$content) ([string]$Target.ja)
 }
 
 function Store-Translations([hashtable]$Result) {
@@ -327,6 +455,20 @@ function Invoke-SelfTest {
     if ($parts.Count -ne 2 -or $parts[0] -ne "A" -or $parts[1] -ne "B") {
         throw "Self-test delimiter split failed."
     }
+
+    $cleaned = Clean-TranslationText '"测试"' 'テスト'
+    if ($cleaned -ne "测试") { throw "Self-test quote cleanup failed." }
+
+    $preserved = Clean-TranslationText ([string][char]0x201C + "测试" + [string][char]0x201D) ([string][char]0x300C + "テスト" + [string][char]0x300D)
+    if ($preserved -ne ([string][char]0x201C + "测试" + [string][char]0x201D)) {
+        throw "Self-test source quote preservation failed."
+    }
+
+    $shortTarget = [pscustomobject]@{ ja = "せーし" }
+    if ($ShortSegmentChars -gt 0 -and -not (Test-ShouldTranslateSingle $shortTarget)) {
+        throw "Self-test short-segment isolation failed."
+    }
+
     Write-Host "Hy-MT2 translator self-test passed." -ForegroundColor Green
 }
 
@@ -346,6 +488,12 @@ if ($BatchSize -lt 2 -or $BatchSize -gt 60) {
 if ($MaxRetries -lt 1 -or $MaxRetries -gt 5) {
     throw "MaxRetries must be between 1 and 5."
 }
+if ($ShortSegmentChars -lt 0 -or $ShortSegmentChars -gt 50) {
+    throw "ShortSegmentChars must be between 0 and 50."
+}
+if ($ServerStartupTimeoutSec -lt 10 -or $ServerStartupTimeoutSec -gt 600) {
+    throw "ServerStartupTimeoutSec must be between 10 and 600."
+}
 if (-not $OutputPath) { $OutputPath = Get-DefaultOutputPath $InputPath }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 if ($OutputPath -eq $InputPath) { throw "Output path must differ from input." }
@@ -363,8 +511,12 @@ $script:ProgressPath = Get-ProgressPath $OutputPath
 $script:Translations = Load-Progress $script:ProgressPath
 
 foreach ($key in @($script:Translations.Keys)) {
-    if ([int]$key -lt 1 -or [int]$key -gt $script:Entries.Count) {
+    $id = [int]$key
+    if ($id -lt 1 -or $id -gt $script:Entries.Count) {
         $script:Translations.Remove($key)
+    }
+    else {
+        $script:Translations[$id] = Clean-TranslationText ([string]$script:Translations[$id]) ([string]$script:Entries[$id - 1].ja)
     }
 }
 
@@ -372,25 +524,56 @@ Write-Host "Source: $InputPath"
 Write-Host "Output: $OutputPath"
 Write-Host "Model: $Model"
 Write-Host "Entries: $($script:Entries.Count)"
-Write-Host "Mode: Hy-MT2 delimiter-preserving translation with automatic split fallback"
+Write-Host "Mode: Hy-MT2 delimiter-preserving translation with short-segment isolation and automatic split fallback"
+if ($ShortSegmentChars -gt 0) {
+    Write-Host "Short subtitles: <= $ShortSegmentChars non-whitespace character(s) translated independently."
+}
 if ($script:Translations.Count -gt 0) {
     Write-Host "Resuming from checkpoint: $($script:Translations.Count) translated entry/entries."
 }
 
-for ($start = 0; $start -lt $script:Entries.Count; $start += $BatchSize) {
-    $end = [Math]::Min($script:Entries.Count - 1, $start + $BatchSize - 1)
-    $targets = @($script:Entries[$start..$end] | Where-Object {-not $script:Translations.ContainsKey([int]$_.id)})
-    if ($targets.Count -eq 0) { continue }
-    Invoke-ResilientGroup $targets $endpoint
+try {
+    if (Test-IsLoopbackUrl $BaseUrl) {
+        if ($UseExistingServer) {
+            if (-not (Test-HyMt2ServerReady $BaseUrl)) {
+                throw "-UseExistingServer was specified, but no ready llama-server was found at $BaseUrl."
+            }
+            Write-Host "Using existing local llama-server; this script will not stop that external process."
+        }
+        else {
+            Start-ManagedLocalServer $BaseUrl
+        }
+    }
+
+    for ($start = 0; $start -lt $script:Entries.Count; $start += $BatchSize) {
+        $end = [Math]::Min($script:Entries.Count - 1, $start + $BatchSize - 1)
+        $pending = @($script:Entries[$start..$end] | Where-Object {-not $script:Translations.ContainsKey([int]$_.id)})
+        if ($pending.Count -eq 0) { continue }
+
+        $batchTargets = @($pending | Where-Object {-not (Test-ShouldTranslateSingle $_)})
+        if ($batchTargets.Count -gt 0) {
+            Invoke-ResilientGroup $batchTargets $endpoint
+        }
+
+        $singleTargets = @($pending | Where-Object {Test-ShouldTranslateSingle $_})
+        foreach ($target in $singleTargets) {
+            Invoke-ResilientGroup @($target) $endpoint
+        }
+    }
+
+    $outputText = Build-Srt $script:Entries $script:Translations
+    Assert-TimelineLocked $script:Entries $outputText
+    $tempOutput = $OutputPath + ".tmp"
+    Write-Utf8NoBom $tempOutput $outputText
+    Move-Item -LiteralPath $tempOutput -Destination $OutputPath -Force
+    Remove-Item -LiteralPath $script:ProgressPath -Force -ErrorAction SilentlyContinue
+
+    Write-Host "Translation completed." -ForegroundColor Green
+    Write-Host "Timeline lock verified: $($script:Entries.Count) indices and timestamps unchanged." -ForegroundColor Green
+    Write-Host "Saved: $OutputPath" -ForegroundColor Green
 }
-
-$outputText = Build-Srt $script:Entries $script:Translations
-Assert-TimelineLocked $script:Entries $outputText
-$tempOutput = $OutputPath + ".tmp"
-Write-Utf8NoBom $tempOutput $outputText
-Move-Item -LiteralPath $tempOutput -Destination $OutputPath -Force
-Remove-Item -LiteralPath $script:ProgressPath -Force -ErrorAction SilentlyContinue
-
-Write-Host "Translation completed." -ForegroundColor Green
-Write-Host "Timeline lock verified: $($script:Entries.Count) indices and timestamps unchanged." -ForegroundColor Green
-Write-Host "Saved: $OutputPath" -ForegroundColor Green
+finally {
+    if (-not $UseExistingServer) {
+        Stop-ManagedLocalServer
+    }
+}
