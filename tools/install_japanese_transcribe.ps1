@@ -11,12 +11,18 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = "Marcus515J/Faster-Whisper-TransWithAI-ChickenRice"
 $Version = "v1.10.1"
-$WorkerBase = "https://gh-releases.ading2210.workers.dev/$Repo/releases/download/$Version"
+$ReleaseBase = "https://github.com/$Repo/releases/download/$Version"
 
 $ExpectedSha256 = @{
     cu118 = "612f3eb04dbad3a6c891eeb5198b66a6af0953934794e50d9a2367d19bfdbc88"
     cu122 = "5552d4b731c60e5aa60267182bdb9ffce02db7debe290e445b048aa1ec4c8f5b"
     cu128 = "4b19595f7363730085aacbfe563f3467313e0c95fe83abe66eff9c6d1e1c9ee9"
+}
+
+$PartCount = @{
+    cu118 = 3
+    cu122 = 3
+    cu128 = 3
 }
 
 if (-not $InstallRoot) {
@@ -99,8 +105,6 @@ function Resolve-CudaVariant {
         throw "nvidia-smi was not found. Install/update the NVIDIA driver or pass -Variant cu118/cu122/cu128."
     }
 
-    # First try the traditional banner. Some driver/localization combinations do
-    # not expose this field reliably, so failure here is not fatal.
     $smiText = (& $nvidiaSmi.Source 2>&1 | Out-String)
     if ($LASTEXITCODE -eq 0 -and $smiText -match 'CUDA\s+Version\s*:\s*(\d+)\.(\d+)') {
         $major = [int]$Matches[1]
@@ -112,9 +116,6 @@ function Resolve-CudaVariant {
         return "cu118"
     }
 
-    # Reliable fallback: query the driver version directly. Newer NVIDIA drivers
-    # are backward-compatible with older CUDA runtimes, so select the newest
-    # package supported by the installed driver branch.
     $driverText = (& $nvidiaSmi.Source --query-gpu=driver_version --format=csv,noheader 2>$null |
         Select-Object -First 1 | Out-String).Trim()
 
@@ -133,26 +134,11 @@ function Resolve-CudaVariant {
     throw "Could not determine CUDA compatibility from nvidia-smi. Pass -Variant cu118/cu122/cu128."
 }
 
-function Invoke-StreamDownload {
+function Invoke-DotNetDownload {
     param(
         [Parameter(Mandatory = $true)][string]$SourceUrl,
         [Parameter(Mandatory = $true)][string]$Destination
     )
-
-    # BITS requires byte-range support and fails against the release merge proxy.
-    # Prefer curl on supported Windows versions because it follows redirects and
-    # streams large files directly to disk without buffering the archive in RAM.
-    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
-    if ($curl) {
-        Write-Host "Downloading with curl.exe..."
-        & $curl.Source -L --fail --retry 3 --retry-delay 2 --connect-timeout 30 --output $Destination $SourceUrl
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            return
-        }
-
-        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
-        Write-Host "curl.exe failed; falling back to .NET streaming download."
-    }
 
     Add-Type -AssemblyName System.Net.Http
     $handler = New-Object System.Net.Http.HttpClientHandler
@@ -163,13 +149,13 @@ function Invoke-StreamDownload {
     $outputStream = $null
 
     try {
-        Write-Host "Downloading with .NET streaming HTTP..."
         $response = $client.GetAsync(
             $SourceUrl,
             [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
         ).GetAwaiter().GetResult()
-        $response.EnsureSuccessStatusCode()
+        $null = $response.EnsureSuccessStatusCode()
 
+        $total = $response.Content.Headers.ContentLength
         $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
         $outputStream = [System.IO.File]::Open(
             $Destination,
@@ -178,9 +164,19 @@ function Invoke-StreamDownload {
             [System.IO.FileShare]::None
         )
 
-        $buffer = New-Object byte[] (1024 * 1024)
+        $buffer = New-Object byte[] (4 * 1024 * 1024)
+        [long]$downloaded = 0
+        [int]$lastPercent = -1
         while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
             $outputStream.Write($buffer, 0, $read)
+            $downloaded += $read
+            if ($total -and $total -gt 0) {
+                $percent = [int](($downloaded * 100) / $total)
+                if ($percent -ge ($lastPercent + 5)) {
+                    Write-Host ("  {0}% ({1:N1} / {2:N1} MiB)" -f $percent, ($downloaded / 1MB), ($total / 1MB))
+                    $lastPercent = $percent
+                }
+            }
         }
     } catch {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
@@ -192,9 +188,96 @@ function Invoke-StreamDownload {
         if ($client) { $client.Dispose() }
         if ($handler) { $handler.Dispose() }
     }
+}
 
+function Invoke-DirectDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceUrl,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    if ($curl) {
+        $resume = (Test-Path -LiteralPath $Destination -PathType Leaf) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)
+        $args = @(
+            "-L",
+            "--fail",
+            "--retry", "5",
+            "--retry-all-errors",
+            "--retry-delay", "2",
+            "--connect-timeout", "30",
+            "--progress-bar"
+        )
+        if ($resume) {
+            Write-Host "Resuming existing partial file..."
+            $args += @("-C", "-")
+        }
+        $args += @("-o", $Destination, $SourceUrl)
+
+        & $curl.Source @args
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+            return
+        }
+
+        if ($resume) {
+            Write-Host "Resume failed; retrying this part from the beginning."
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            $args = @(
+                "-L",
+                "--fail",
+                "--retry", "5",
+                "--retry-all-errors",
+                "--retry-delay", "2",
+                "--connect-timeout", "30",
+                "--progress-bar",
+                "-o", $Destination,
+                $SourceUrl
+            )
+            & $curl.Source @args
+            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+                return
+            }
+        }
+
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        Write-Host "curl.exe failed; falling back to .NET streaming HTTP for this part."
+    }
+
+    Invoke-DotNetDownload -SourceUrl $SourceUrl -Destination $Destination
     if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-        throw "Download completed without creating the expected archive: $Destination"
+        throw "Download completed without creating the expected file: $Destination"
+    }
+}
+
+function Join-SplitFiles {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Parts,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $output = $null
+    try {
+        $output = [System.IO.File]::Open(
+            $Destination,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $buffer = New-Object byte[] (8 * 1024 * 1024)
+        foreach ($part in $Parts) {
+            Write-Host "Merging $(Split-Path -Leaf $part)..."
+            $input = $null
+            try {
+                $input = [System.IO.File]::OpenRead($part)
+                while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $output.Write($buffer, 0, $read)
+                }
+            } finally {
+                if ($input) { $input.Dispose() }
+            }
+        }
+    } finally {
+        if ($output) { $output.Dispose() }
     }
 }
 
@@ -215,7 +298,6 @@ if (Test-Path -LiteralPath $InstallRoot) {
 $selectedVariant = Resolve-CudaVariant
 $archiveName = "faster_whisper_transwithai_windows_$selectedVariant-transcribe.zip"
 $expectedHash = $ExpectedSha256[$selectedVariant]
-$url = "$WorkerBase/$archiveName"
 
 $parent = Split-Path -Parent $InstallRoot
 if (-not $parent) { throw "Could not resolve the parent directory for: $InstallRoot" }
@@ -237,21 +319,39 @@ if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
         Write-Host "Existing archive passed SHA-256 verification."
         $needDownload = $false
     } else {
-        Write-Host "Existing archive failed verification; downloading again."
+        Write-Host "Existing archive failed verification; rebuilding from GitHub split files."
         Remove-Item -LiteralPath $archivePath -Force
     }
 }
 
+$partPaths = @()
 if ($needDownload) {
-    Write-Host "Downloading the v1.10.1 Japanese transcribe package..."
-    Invoke-StreamDownload -SourceUrl $url -Destination $archivePath
+    Write-Host "Downloading the v1.10.1 Japanese transcribe package directly from GitHub split assets..."
+    for ($i = 0; $i -lt $PartCount[$selectedVariant]; $i++) {
+        $suffix = $i.ToString("0000")
+        $partName = "$archiveName.$suffix"
+        $partPath = Join-Path $downloadDir $partName
+        $partUrl = "$ReleaseBase/$partName"
+        $partPaths += $partPath
+
+        Write-Host ""
+        Write-Host "Part $($i + 1)/$($PartCount[$selectedVariant]): $partName"
+        Invoke-DirectDownload -SourceUrl $partUrl -Destination $partPath
+    }
+
+    Write-Host ""
+    Write-Host "Combining split files..."
+    Join-SplitFiles -Parts $partPaths -Destination $archivePath
 }
 
 Write-Host "Verifying SHA-256..."
 $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expectedHash) {
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-    throw "SHA-256 verification failed. The downloaded archive was deleted; run the installer again."
+    foreach ($partPath in $partPaths) {
+        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+    }
+    throw "SHA-256 verification failed. The combined archive and split files were deleted; run the installer again."
 }
 Write-Host "SHA-256 verification passed."
 
@@ -284,6 +384,9 @@ try {
 
     if (-not $KeepArchive) {
         Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        foreach ($partPath in $partPaths) {
+            Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
