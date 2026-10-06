@@ -205,11 +205,7 @@ def _compact_text(text: Any) -> str:
 
 def _quality_text(text: Any) -> str:
     compact = _compact_text(text)
-    return "".join(
-        char
-        for char in compact
-        if not unicodedata.category(char).startswith(("P", "Z"))
-    )
+    return "".join(char for char in compact if not unicodedata.category(char).startswith(("P", "Z")))
 
 
 def _float_attr(segment: Any, name: str) -> float | None:
@@ -644,8 +640,7 @@ def align_segment_ends_to_vad(
     spans = _parse_vad_spans(clip_timestamps)
     if not options.align_end_to_vad or options.max_end_extension_s <= 0 or not spans:
         return [
-            SubtitleSegment(start=float(item.start), end=float(item.end), text=str(item.text).strip())
-            for item in items
+            SubtitleSegment(start=float(item.start), end=float(item.end), text=str(item.text).strip()) for item in items
         ]
 
     result: list[SubtitleSegment] = []
@@ -718,7 +713,11 @@ def _retry_segment(
     base_kwargs: dict[str, Any],
     options: SubtitleRefineOptions,
 ) -> list[Any] | None:
-    if isinstance(audio_input, (str, bytes)) or not hasattr(audio_input, "__len__") or not hasattr(audio_input, "__getitem__"):
+    if (
+        isinstance(audio_input, (str, bytes))
+        or not hasattr(audio_input, "__len__")
+        or not hasattr(audio_input, "__getitem__")
+    ):
         return None
     if not hasattr(transcribe_owner, "feature_extractor"):
         return None
