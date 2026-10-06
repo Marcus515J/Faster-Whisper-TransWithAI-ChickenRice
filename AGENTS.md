@@ -4,7 +4,7 @@
 
 - 当前仓库：`Marcus515J/Faster-Whisper-TransWithAI-ChickenRice`
 - 上游来源：`TransWithAI/Faster-Whisper-TransWithAI-ChickenRice`
-- 本仓库是维护者独立维护的 Fork，当前与 `Marcus515J/SubtitleSyncTool` 完全分开开发、测试和发布。
+- 本仓库是维护者独立维护的 Fork，继续独立开发、测试和发布；维护者已于 2026-10-07 明确进入与 `Marcus515J/SubtitleSyncTool` 的“海南鸡整合阶段”，当前只允许通过稳定 Bridge / 子进程契约做浅层调用。
 
 ## 严格隔离规则
 
@@ -33,18 +33,21 @@
 
 无法同时确认时，不得凭相似主题自动补齐关系。
 
-## 未来与 SubtitleSyncTool 的关系
+## 当前与 SubtitleSyncTool 的整合边界
 
-维护者长期希望把电影字幕相关功能尽量集中在一个软件中，但**现在不进行整合**。
+维护者已明确启动整合。当前方向不是把两个仓库合并，而是由 ChickenRice 暴露稳定 Bridge：Stage 1 生成日文 SRT，释放 ASR/GPU 后由 Stage 2 Hy-MT2 生成中文字幕；SubtitleSyncTool 只做浅层 UI 调用。
 
-只有当 `SubtitleSyncTool` 当前功能全部完成并稳定调试后，且维护者明确宣布进入新的“海南鸡整合阶段”，才允许重新审计两个仓库当时的稳定基线、许可、接口和迁移范围。
+当前允许：
 
-在那之前：
+- 提供稳定 CLI / job JSON 契约；
+- 提供机器可读阶段进度；
+- 接受翻译角色、风格、影片背景和术语表；
+- 缓存并复用 Stage 1 日文 SRT；
+- 用源字幕、模型和 Prompt 指纹隔离 Stage 2 checkpoint。
 
-- 本仓库继续独立可运行、独立测试、独立发布；
-- 不为了未来整合而提前重构本仓库；
-- 不新增指向 SubtitleSyncTool 的运行时依赖；
-- 不把 SubtitleSyncTool 的项目规则复制进本仓库；
-- 不把本仓库的实现自动写入 SubtitleSyncTool。
+当前仍禁止：
 
-未来整合必须由新的明确 Integration 任务启动，不能从历史对话或技术相似性推断已经授权。
+- 让本仓库依赖 SubtitleSyncTool 才能独立运行；
+- 复制 SubtitleSyncTool 的 UI、Anchor、ASS 模板或双语合并实现进本仓库；
+- 把模型、CUDA 运行时或本机缓存提交到另一个仓库；
+- 因整合而自动共享两个项目未明确授权的参数、测试结论、Issue 或发布状态。
