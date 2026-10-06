@@ -184,6 +184,7 @@ class WordTimingSplitTests(unittest.TestCase):
         options = WordTimingSplitOptions(
             enabled=True,
             min_display_duration_s=0.6,
+            end_hold_s=0.5,
             split_on_punctuation=False,
         )
 
@@ -201,12 +202,48 @@ class WordTimingSplitTests(unittest.TestCase):
         options = WordTimingSplitOptions(
             enabled=True,
             min_display_duration_s=0.6,
+            end_hold_s=0.5,
             split_on_punctuation=False,
         )
 
         result = list(split_segments_by_words(segments, options))
 
         self.assertAlmostEqual(result[0].end, 0.3)
+        self.assertLessEqual(result[0].end, result[1].start)
+
+    def test_end_hold_keeps_normal_subtitle_visible_longer(self) -> None:
+        segments = [
+            make_segment(0.0, 2.0, "第一句", [make_word(0.0, 2.0, "第一句")]),
+            make_segment(4.0, 5.0, "第二句", [make_word(4.0, 5.0, "第二句")]),
+        ]
+        options = WordTimingSplitOptions(
+            enabled=True,
+            min_display_duration_s=0.0,
+            end_hold_s=0.5,
+            split_on_punctuation=False,
+        )
+
+        result = list(split_segments_by_words(segments, options))
+
+        self.assertAlmostEqual(result[0].start, 0.0)
+        self.assertAlmostEqual(result[0].end, 2.5)
+        self.assertAlmostEqual(result[1].end, 5.5)
+
+    def test_end_hold_never_overlaps_next_subtitle(self) -> None:
+        segments = [
+            make_segment(0.0, 2.0, "第一句", [make_word(0.0, 2.0, "第一句")]),
+            make_segment(2.2, 3.0, "第二句", [make_word(2.2, 3.0, "第二句")]),
+        ]
+        options = WordTimingSplitOptions(
+            enabled=True,
+            min_display_duration_s=0.0,
+            end_hold_s=0.5,
+            split_on_punctuation=False,
+        )
+
+        result = list(split_segments_by_words(segments, options))
+
+        self.assertAlmostEqual(result[0].end, 2.2)
         self.assertLessEqual(result[0].end, result[1].start)
 
     def test_splits_on_punctuation_after_minimum_duration(self) -> None:
@@ -235,6 +272,7 @@ class WordTimingSplitTests(unittest.TestCase):
                 "pause_threshold_s": 0.4,
                 "min_duration_s": 1.0,
                 "min_display_duration_s": 0.7,
+                "end_hold_s": 0.45,
                 "split_on_punctuation": False,
             }
         )
@@ -244,6 +282,7 @@ class WordTimingSplitTests(unittest.TestCase):
         self.assertEqual(options.pause_threshold_s, 0.4)
         self.assertEqual(options.min_duration_s, 1.0)
         self.assertEqual(options.min_display_duration_s, 0.7)
+        self.assertEqual(options.end_hold_s, 0.45)
         self.assertFalse(options.split_on_punctuation)
 
 
