@@ -175,14 +175,7 @@ function Start-ManagedLocalServer([string]$Url) {
     )
 
     Write-Host "Starting local Hy-MT2 server on demand..."
-    $script:ManagedServerProcess = Start-Process \
-        -FilePath $LlamaServerPath \
-        -ArgumentList $arguments \
-        -WorkingDirectory (Split-Path $LlamaServerPath -Parent) \
-        -WindowStyle Hidden \
-        -RedirectStandardOutput $script:ManagedServerStdout \
-        -RedirectStandardError $script:ManagedServerStderr \
-        -PassThru
+    $script:ManagedServerProcess = Start-Process -FilePath $LlamaServerPath -ArgumentList $arguments -WorkingDirectory (Split-Path $LlamaServerPath -Parent) -WindowStyle Hidden -RedirectStandardOutput $script:ManagedServerStdout -RedirectStandardError $script:ManagedServerStderr -PassThru
 
     $deadline = (Get-Date).AddSeconds($ServerStartupTimeoutSec)
     while ((Get-Date) -lt $deadline) {
@@ -459,8 +452,10 @@ function Invoke-SelfTest {
     $cleaned = Clean-TranslationText '"测试"' 'テスト'
     if ($cleaned -ne "测试") { throw "Self-test quote cleanup failed." }
 
-    $preserved = Clean-TranslationText ([string][char]0x201C + "测试" + [string][char]0x201D) ([string][char]0x300C + "テスト" + [string][char]0x300D)
-    if ($preserved -ne ([string][char]0x201C + "测试" + [string][char]0x201D)) {
+    $quotedTranslation = ([string][char]0x201C) + "测试" + ([string][char]0x201D)
+    $quotedSource = ([string][char]0x300C) + "テスト" + ([string][char]0x300D)
+    $preserved = Clean-TranslationText $quotedTranslation $quotedSource
+    if ($preserved -ne $quotedTranslation) {
         throw "Self-test source quote preservation failed."
     }
 
