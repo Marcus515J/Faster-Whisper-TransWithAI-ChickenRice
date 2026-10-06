@@ -99,18 +99,38 @@ function Resolve-CudaVariant {
         throw "nvidia-smi was not found. Install/update the NVIDIA driver or pass -Variant cu118/cu122/cu128."
     }
 
+    # First try the traditional banner. Some driver/localization combinations do
+    # not expose this field reliably, so failure here is not fatal.
     $smiText = (& $nvidiaSmi.Source 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $smiText -notmatch 'CUDA Version:\s*(\d+)\.(\d+)') {
-        throw "Could not determine the CUDA version from nvidia-smi. Pass -Variant cu118/cu122/cu128."
+    if ($LASTEXITCODE -eq 0 -and $smiText -match 'CUDA\s+Version\s*:\s*(\d+)\.(\d+)') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $cuda = [version]("{0}.{1}" -f $major, $minor)
+
+        if ($cuda -ge [version]"12.8") { return "cu128" }
+        if ($cuda -ge [version]"12.2") { return "cu122" }
+        return "cu118"
     }
 
-    $major = [int]$Matches[1]
-    $minor = [int]$Matches[2]
-    $cuda = [version]("{0}.{1}" -f $major, $minor)
+    # Reliable fallback: query the driver version directly. Newer NVIDIA drivers
+    # are backward-compatible with older CUDA runtimes, so select the newest
+    # package supported by the installed driver branch.
+    $driverText = (& $nvidiaSmi.Source --query-gpu=driver_version --format=csv,noheader 2>$null |
+        Select-Object -First 1 | Out-String).Trim()
 
-    if ($cuda -ge [version]"12.8") { return "cu128" }
-    if ($cuda -ge [version]"12.2") { return "cu122" }
-    return "cu118"
+    if ($driverText -match '^(\d+)\.(\d+)') {
+        $driverMajor = [int]$Matches[1]
+        $driverMinor = [int]$Matches[2]
+        $driver = [version]("{0}.{1}" -f $driverMajor, $driverMinor)
+
+        if ($driver -ge [version]"570.65") { return "cu128" }
+        if ($driver -ge [version]"536.25") { return "cu122" }
+        if ($driver -ge [version]"522.06") { return "cu118" }
+
+        throw "NVIDIA driver $driverText is too old for the packaged CUDA 11.8 build. Update the driver first."
+    }
+
+    throw "Could not determine CUDA compatibility from nvidia-smi. Pass -Variant cu118/cu122/cu128."
 }
 
 if (Test-InstalledPackage -Root $InstallRoot) {
