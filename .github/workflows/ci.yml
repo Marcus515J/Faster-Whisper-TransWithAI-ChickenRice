@@ -81,6 +81,8 @@ jobs:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         .\tools\run_japanese_to_chinese_pipeline.ps1 -SelfTest
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .\tools\review_asr_segments.ps1 -SelfTest
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         .\tools\setup_stage2_runtime.ps1 -SelfTest
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         .\tools\install_full_pipeline.ps1 -SelfTest
