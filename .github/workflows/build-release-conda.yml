@@ -187,11 +187,11 @@ jobs:
         cp tools/README_pipeline_bridge.md payload/
 
         cat > payload/RUNTIME_INFO.txt <<'EOF'
-ChickenRice Stage 2 portable runtime
-Tested llama.cpp: b11429 / v0.6.0 commit d812350
-Backend: Windows x64 CUDA 12 (CUDA 12.4 runtime DLLs)
-Hy-MT2 model is intentionally NOT bundled; use setup_stage2_runtime.ps1.
-EOF
+        ChickenRice Stage 2 portable runtime
+        Tested llama.cpp: b11429 / v0.6.0 commit d812350
+        Backend: Windows x64 CUDA 12 (CUDA 12.4 runtime DLLs)
+        Hy-MT2 model is intentionally NOT bundled; use setup_stage2_runtime.ps1.
+        EOF
 
         cd payload
         zip -5 -r -q ../chickenrice_stage2_runtime_win_cuda12.zip .
@@ -242,14 +242,14 @@ EOF
         done
 
         cat > payload/从零开始.txt <<'EOF'
-推荐入口：
-1. 打开 PowerShell。
-2. 运行：
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_full_pipeline.ps1 -InstallRoot "H:\AI\ChickenRice-HyMT2"
+        推荐入口：
+        1. 打开 PowerShell。
+        2. 运行：
+           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_full_pipeline.ps1 -InstallRoot "H:\AI\ChickenRice-HyMT2"
 
-脚本会自动下载对应的 transcribe Release 包、Stage 2 runtime 和 Hy-MT2 模型。
-详细说明见：长期恢复指南_日文转中文字幕.md
-EOF
+        脚本会自动下载对应的 transcribe Release 包、Stage 2 runtime 和 Hy-MT2 模型。
+        详细说明见：长期恢复指南_日文转中文字幕.md
+        EOF
 
         version="${{ needs.resolve-release.outputs.version }}"
         archive="chickenrice_bridge_tools_${version}.zip"
