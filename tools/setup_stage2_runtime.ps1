@@ -163,10 +163,25 @@ try {
                 throw "Stage 2 runtime asset is missing llama.cpp\llama-server.exe."
             }
 
-            if (Test-Path -LiteralPath $Stage2Root) {
-                Remove-Item -LiteralPath $Stage2Root -Recurse -Force
+            New-Item -ItemType Directory -Path $Stage2Root -Force | Out-Null
+
+            # Runtime refresh must never delete an already downloaded model.
+            # Replace only stage2-runtime\llama.cpp and keep stage2-runtime\models.
+            if (Test-Path -LiteralPath $llamaRoot) {
+                Remove-Item -LiteralPath $llamaRoot -Recurse -Force
             }
-            Move-Item -LiteralPath $extract -Destination $Stage2Root
+            Move-Item -LiteralPath (Join-Path $extract "llama.cpp") -Destination $llamaRoot
+
+            foreach ($extra in @(
+                "stage2_runtime_manifest.json",
+                "README_pipeline_bridge.md",
+                "RUNTIME_INFO.txt"
+            )) {
+                $source = Join-Path $extract $extra
+                if (Test-Path -LiteralPath $source) {
+                    Copy-Item -LiteralPath $source -Destination (Join-Path $Stage2Root $extra) -Force
+                }
+            }
         }
         else {
             Write-Host "Release runtime asset not found; falling back to pinned upstream llama.cpp files."
