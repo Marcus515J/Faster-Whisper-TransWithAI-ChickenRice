@@ -96,11 +96,12 @@ function Parse-Srt([string]$Path) {
 function Select-TargetTranscript(
     [object[]]$Entries,
     [int64]$TargetStartMs,
-    [int64]$TargetEndMs
+    [int64]$TargetEndMs,
+    [int]$MarginMs = 900
 ) {
     if (@($Entries).Count -eq 0) { return "" }
 
-    $margin = 900
+    $margin = [Math]::Max(0, $MarginMs)
     $selected = @(
         $Entries | Where-Object {
             ([int64]$_.end_ms -ge ($TargetStartMs - $margin)) -and
@@ -179,7 +180,7 @@ function Invoke-SelfTest {
         if ($sample.Count -ne 2) {
             throw "SRT parser self-test failed."
         }
-        $picked = Select-TargetTranscript $sample 2400 2700
+        $picked = Select-TargetTranscript $sample 2400 2700 900
         if ($picked -notmatch "B") {
             throw "Target transcript selection self-test failed."
         }
@@ -227,11 +228,19 @@ if ($candidates.Count -eq 0) {
 
 $paddingBeforeMs = 3500
 $paddingAfterMs = 3500
+$tightPaddingBeforeMs = 800
+$tightPaddingAfterMs = 800
 if ($null -ne $job.padding_before_ms) {
     $paddingBeforeMs = [Math]::Max(0, [int]$job.padding_before_ms)
 }
 if ($null -ne $job.padding_after_ms) {
     $paddingAfterMs = [Math]::Max(0, [int]$job.padding_after_ms)
+}
+if ($null -ne $job.tight_padding_before_ms) {
+    $tightPaddingBeforeMs = [Math]::Max(0, [int]$job.tight_padding_before_ms)
+}
+if ($null -ne $job.tight_padding_after_ms) {
+    $tightPaddingAfterMs = [Math]::Max(0, [int]$job.tight_padding_after_ms)
 }
 
 $keepWorkFiles = $false
@@ -277,6 +286,8 @@ try {
         total = $candidates.Count
         padding_before_ms = $paddingBeforeMs
         padding_after_ms = $paddingAfterMs
+        tight_padding_before_ms = $tightPaddingBeforeMs
+        tight_padding_after_ms = $tightPaddingAfterMs
     }
 
     $position = 0
