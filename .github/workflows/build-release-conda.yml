@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - 'release/VERSION'
+      - 'release/TRIGGER'
   workflow_dispatch:
     inputs:
       release_version:
