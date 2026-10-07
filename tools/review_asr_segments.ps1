@@ -300,39 +300,64 @@ try {
             throw "Candidate #$id has invalid time range."
         }
 
-        $clipStartMs = [Math]::Max([int64]0, $startMs - $paddingBeforeMs)
-        $clipEndMs = $endMs + $paddingAfterMs
-        $clipDurationMs = $clipEndMs - $clipStartMs
-        $clipName = ("candidate-{0:D6}.wav" -f $id)
-        $clipPath = Join-Path $jobDir $clipName
+        $contextStartMs = [Math]::Max([int64]0, $startMs - $paddingBeforeMs)
+        $contextEndMs = $endMs + $paddingAfterMs
+        $contextDurationMs = $contextEndMs - $contextStartMs
+        $contextPath = Join-Path $jobDir ("candidate-{0:D6}-context.wav" -f $id)
 
-        $ffmpegArgs = @(
-            "-hide_banner",
-            "-loglevel", "error",
-            "-y",
-            "-ss", (Format-Seconds $clipStartMs),
-            "-t", (Format-Seconds $clipDurationMs),
-            "-i", $inputVideo,
-            "-vn",
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "pcm_s16le",
-            $clipPath
+        $tightStartMs = [Math]::Max([int64]0, $startMs - $tightPaddingBeforeMs)
+        $tightEndMs = $endMs + $tightPaddingAfterMs
+        $tightDurationMs = $tightEndMs - $tightStartMs
+        $tightPath = Join-Path $jobDir ("candidate-{0:D6}-tight.wav" -f $id)
+
+        $clips = @(
+            [pscustomobject]@{
+                path = $contextPath
+                start_ms = $contextStartMs
+                duration_ms = $contextDurationMs
+                label = "context"
+            },
+            [pscustomobject]@{
+                path = $tightPath
+                start_ms = $tightStartMs
+                duration_ms = $tightDurationMs
+                label = "tight"
+            }
         )
 
-        & $ffmpegExe @ffmpegArgs
-        $ffmpegExit = $LASTEXITCODE
-        if ($ffmpegExit -ne 0 -or -not (Test-Path -LiteralPath $clipPath)) {
-            throw "ffmpeg failed while extracting candidate #$id (exit $ffmpegExit)."
+        foreach ($clip in $clips) {
+            $ffmpegArgs = @(
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-ss", (Format-Seconds ([int64]$clip.start_ms)),
+                "-t", (Format-Seconds ([int64]$clip.duration_ms)),
+                "-i", $inputVideo,
+                "-vn",
+                "-ac", "1",
+                "-ar", "16000",
+                "-c:a", "pcm_s16le",
+                [string]$clip.path
+            )
+
+            & $ffmpegExe @ffmpegArgs
+            $ffmpegExit = $LASTEXITCODE
+            if ($ffmpegExit -ne 0 -or -not (Test-Path -LiteralPath ([string]$clip.path))) {
+                throw "ffmpeg failed while extracting candidate #$id $($clip.label) clip (exit $ffmpegExit)."
+            }
         }
 
         $clipRecords.Add([pscustomobject]@{
             id = $id
             original = [string]$candidate.original
-            clip_path = $clipPath
-            clip_start_ms = $clipStartMs
-            target_start_ms = ($startMs - $clipStartMs)
-            target_end_ms = ($endMs - $clipStartMs)
+            context_path = $contextPath
+            context_start_ms = $contextStartMs
+            context_target_start_ms = ($startMs - $contextStartMs)
+            context_target_end_ms = ($endMs - $contextStartMs)
+            tight_path = $tightPath
+            tight_start_ms = $tightStartMs
+            tight_target_start_ms = ($startMs - $tightStartMs)
+            tight_target_end_ms = ($endMs - $tightStartMs)
         }) | Out-Null
 
         Emit-Event "extract_progress" @{
@@ -342,7 +367,11 @@ try {
         }
     }
 
-    $clipPaths = @($clipRecords | ForEach-Object { [string]$_.clip_path })
+    $clipPaths = @()
+    foreach ($record in $clipRecords) {
+        $clipPaths += [string]$record.context_path
+        $clipPaths += [string]$record.tight_path
+    }
     $inferArgs = @(
         "--model_name_or_path=$modelPath",
         "--device=$device",
