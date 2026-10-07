@@ -55,7 +55,7 @@
 
 ## v1.11+ 发布与长期恢复规则
 
-- 正式 Release 版本由 `release/VERSION` 控制；合并对该文件的版本更新后，`.github/workflows/build-release-conda.yml` 自动构建、实测并发布。不要手工创建一个缺少二进制资产的同名 Release。
+- 正式 Release 版本由 `release/VERSION` 控制；合并对该文件的版本更新后，`.github/workflows/build-release-conda.yml` 自动构建、实测并发布。不要手工创建一个缺少二进制资产的同名 Release。 发布流水线本身失败、需要重跑同一版本时，只更新 `release/TRIGGER`；不得为了重试伪造新的版本号。
 - “日文影片 → Hy-MT2 中文字幕”的推荐基础包是 `-transcribe`。所有 Bridge / Stage 2 小型脚本、恢复文档、模型清单必须随 Windows Release 包一起复制，不能只留在源码 `tools/`。
 - 额外发布 `chickenrice_bridge_tools_<version>.zip` 作为零状态恢复入口，和 `chickenrice_stage2_runtime_win_cuda12.zip` 作为已验证 llama.cpp 便携 Runtime。
 - Hy-MT2 Q8 等超大翻译模型不重复打入各 GPU 发行包；固定来源、大小、SHA-256 和已验证 llama.cpp 基线写在 `tools/stage2_runtime_manifest.json`，恢复脚本负责下载与校验。
