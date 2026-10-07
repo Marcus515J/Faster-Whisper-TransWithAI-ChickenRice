@@ -5,7 +5,8 @@ param(
     [string]$Variant = "auto",
     [string]$ReleaseTag = "latest",
     [switch]$SkipStage2Model,
-    [switch]$KeepDownloads
+    [switch]$KeepDownloads,
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +137,166 @@ function Join-Parts(
     finally {
         $output.Dispose()
     }
+}
+
+function Invoke-SelfTest {
+    $temp = Join-Path $env:TEMP ("chickenrice-installer-selftest-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    try {
+        $a = Join-Path $temp "a.part"
+        $b = Join-Path $temp "b.part"
+        $out = Join-Path $temp "joined.bin"
+        [System.IO.File]::WriteAllBytes($a, [byte[]](1,2,3))
+        [System.IO.File]::WriteAllBytes($b, [byte[]](4,5))
+        Join-Parts @($a, $b) $out
+        $bytes = [System.IO.File]::ReadAllBytes($out)
+        if ($bytes.Length -ne 5 -or $bytes[0] -ne 1 -or $bytes[4] -ne 5) {
+            throw "Split-file join self-test failed."
+        }
+
+        $mock = [pscustomobject]@{
+            name = "test.bin"
+            digest = "sha256:" + ("0" * 64)
+        }
+        if ([string]$mock.digest -notmatch '^sha256:[0-9a-f]{64}
+    $InstallRoot = Join-Path (Get-Location).Path "ChickenRice-HyMT2"
+}
+$InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+$selectedVariant = Resolve-CudaVariant
+
+$releaseApi = if ($ReleaseTag -eq "latest") {
+    "https://api.github.com/repos/$Repo/releases/latest"
+}
+else {
+    "https://api.github.com/repos/$Repo/releases/tags/$ReleaseTag"
+}
+
+Write-Host "Resolving release..."
+$release = Invoke-RestMethod -Uri $releaseApi -Headers @{"User-Agent"="ChickenRice-Full-Installer"}
+$resolvedTag = [string]$release.tag_name
+$archiveBase = "faster_whisper_transwithai_windows_$selectedVariant-transcribe.zip"
+
+$directAsset = @($release.assets | Where-Object { $_.name -eq $archiveBase } | Select-Object -First 1)
+$partAssets = @(
+    $release.assets |
+        Where-Object { $_.name -match ([regex]::Escape($archiveBase) + '\.\d{4}$') } |
+        Sort-Object name
+)
+
+if ($directAsset.Count -eq 0 -and $partAssets.Count -eq 0) {
+    throw "Transcribe package was not found in release $resolvedTag for variant $selectedVariant."
+}
+
+if (Test-Path -LiteralPath $InstallRoot) {
+    $existing = Get-ChildItem -LiteralPath $InstallRoot -Force -ErrorAction SilentlyContinue
+    if ($existing) {
+        throw "InstallRoot is not empty: $InstallRoot"
+    }
+}
+
+$installParent = Split-Path $InstallRoot -Parent
+if (-not $installParent) {
+    throw "Could not resolve InstallRoot parent: $InstallRoot"
+}
+New-Item -ItemType Directory -Path $installParent -Force | Out-Null
+$downloadRoot = Join-Path $installParent "_chickenrice-downloads"
+New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+$archivePath = Join-Path $downloadRoot $archiveBase
+
+try {
+    if ($directAsset.Count -gt 0) {
+        Write-Host "Downloading $archiveBase from $resolvedTag..."
+        Invoke-StreamingDownload $directAsset[0].browser_download_url $archivePath
+        Assert-AssetDigest $archivePath $directAsset[0]
+    }
+    else {
+        $partPaths = @()
+        $index = 0
+        foreach ($asset in $partAssets) {
+            $index++
+            $partPath = Join-Path $downloadRoot ([string]$asset.name)
+            Write-Host "Downloading part $index/$($partAssets.Count): $($asset.name)"
+            Invoke-StreamingDownload ([string]$asset.browser_download_url) $partPath
+            Assert-AssetDigest $partPath $asset
+            $partPaths += $partPath
+        }
+
+        Write-Host "Combining release parts..."
+        Join-Parts $partPaths $archivePath
+    }
+
+    $extract = "$InstallRoot.extracting"
+    if (Test-Path -LiteralPath $extract) {
+        Remove-Item -LiteralPath $extract -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $extract -Force | Out-Null
+
+    Write-Host "Extracting Stage 1 package..."
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $extract -Force
+    if (-not (Test-Path -LiteralPath (Join-Path $extract "infer.exe"))) {
+        throw "Extracted transcribe package is missing infer.exe."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $extract "models"))) {
+        throw "Extracted transcribe package is missing models."
+    }
+
+    Move-Item -LiteralPath $extract -Destination $InstallRoot
+
+    $setup = Join-Path $InstallRoot "setup_stage2_runtime.ps1"
+    if (-not (Test-Path -LiteralPath $setup)) {
+        throw "Release package is missing setup_stage2_runtime.ps1."
+    }
+
+    Write-Host ""
+    Write-Host "Installing Stage 2 runtime..."
+    $args = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", $setup,
+        "-Stage2Root", (Join-Path $InstallRoot "stage2-runtime"),
+        "-ReleaseTag", $resolvedTag
+    )
+    if ($SkipStage2Model) {
+        $args += "-SkipModel"
+    }
+
+    & powershell.exe @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "Stage 2 setup failed with exit code $LASTEXITCODE."
+    }
+
+    Write-Host ""
+    Write-Host "Full ChickenRice + Hy-MT2 pipeline is ready." -ForegroundColor Green
+    Write-Host "InstallRoot: $InstallRoot"
+    Write-Host "Launcher:    $(Join-Path $InstallRoot 'run_full_pipeline_local.ps1')"
+    Write-Host "Double-click the bundled full-pipeline BAT in InstallRoot."
+}
+finally {
+    if (-not $KeepDownloads) {
+        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        foreach ($asset in $partAssets) {
+            Remove-Item -LiteralPath (Join-Path $downloadRoot ([string]$asset.name)) -Force -ErrorAction SilentlyContinue
+        }
+        try {
+            if ((Test-Path -LiteralPath $downloadRoot) -and -not (Get-ChildItem -LiteralPath $downloadRoot -Force)) {
+                Remove-Item -LiteralPath $downloadRoot -Force
+            }
+        } catch {}
+    }
+}
+) {
+            throw "Release digest format self-test failed."
+        }
+
+        Write-Host "Full pipeline installer self-test passed." -ForegroundColor Green
+    }
+    finally {
+        Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($SelfTest) {
+    Invoke-SelfTest
+    exit 0
 }
 
 if (-not $InstallRoot) {
