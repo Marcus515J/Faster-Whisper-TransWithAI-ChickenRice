@@ -39,6 +39,21 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Emit-MachineEvent([string]$Stage, [string]$State, [hashtable]$Fields) {
+    $payload = [ordered]@{
+        stage = $Stage
+        state = $State
+    }
+
+    if ($null -ne $Fields) {
+        foreach ($key in $Fields.Keys) {
+            $payload[[string]$key] = $Fields[$key]
+        }
+    }
+
+    Write-Output ("@@CR_EVENT@@" + ($payload | ConvertTo-Json -Compress))
+}
+
 function Parse-Srt([string]$Text) {
     $normalized = $Text -replace "`r`n", "`n" -replace "`r", "`n"
     $blocks = [regex]::Split($normalized.Trim(), "`n[ \t]*`n+")
@@ -517,6 +532,19 @@ function Store-Translations([hashtable]$Result) {
         $script:Translations[[int]$id] = [string]$Result[$id]
     }
     Save-Progress $script:ProgressPath $script:Translations
+
+    $completed = $script:Translations.Count
+    $total = $script:Entries.Count
+    $percent = 0.0
+    if ($total -gt 0) {
+        $percent = [Math]::Round(($completed * 100.0) / $total, 1)
+    }
+
+    Emit-MachineEvent "translation" "progress" @{
+        completed = $completed
+        total = $total
+        percent = $percent
+    }
 }
 
 function Invoke-ResilientGroup([object[]]$Targets, [string]$Endpoint) {
@@ -722,6 +750,20 @@ if ($ShortSegmentChars -gt 0) {
 }
 if ($script:Translations.Count -gt 0) {
     Write-Host "Resuming from checkpoint: $($script:Translations.Count) translated entry/entries."
+    Emit-MachineEvent "translation" "progress" @{
+        completed = $script:Translations.Count
+        total = $script:Entries.Count
+        percent = [Math]::Round(($script:Translations.Count * 100.0) / $script:Entries.Count, 1)
+        resumed = $true
+    }
+}
+else {
+    Emit-MachineEvent "translation" "progress" @{
+        completed = 0
+        total = $script:Entries.Count
+        percent = 0.0
+        resumed = $false
+    }
 }
 
 try {
