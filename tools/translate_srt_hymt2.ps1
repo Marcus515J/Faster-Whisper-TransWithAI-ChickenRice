@@ -13,6 +13,7 @@ param(
     [string]$LocalModelPath = "H:\0AI\models\HY-MT2-7B-Q8_0.gguf",
     [int]$ServerStartupTimeoutSec = 180,
     [switch]$UseExistingServer,
+    [switch]$QcOnly,
     [switch]$SelfTest
 )
 
@@ -778,6 +779,9 @@ if ($ShortSegmentChars -lt 0 -or $ShortSegmentChars -gt 50) {
 if ($ServerStartupTimeoutSec -lt 10 -or $ServerStartupTimeoutSec -gt 600) {
     throw "ServerStartupTimeoutSec must be between 10 and 600."
 }
+if ($QcOnly -and -not $OutputPath) {
+    throw "QcOnly requires OutputPath to point to an existing translated SRT."
+}
 if (-not $OutputPath) { $OutputPath = Get-DefaultOutputPath $InputPath }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 if ($OutputPath -eq $InputPath) { throw "Output path must differ from input." }
@@ -785,6 +789,56 @@ if ($OutputPath -eq $InputPath) { throw "Output path must differ from input." }
 $sourceText = Read-Utf8Text $InputPath
 $script:Entries = @(Parse-Srt $sourceText)
 if ($script:Entries.Count -eq 0) { throw "No subtitle entries found." }
+
+if ($QcOnly) {
+    if (-not (Test-Path -LiteralPath $OutputPath)) {
+        throw "QcOnly translated SRT was not found: $OutputPath"
+    }
+
+    $translatedText = Read-Utf8Text $OutputPath
+    $translatedEntries = @(Parse-Srt $translatedText)
+    Assert-TimelineLocked $script:Entries $translatedText
+
+    $qcMap = @{}
+    foreach ($entry in $translatedEntries) {
+        $qcMap[[int]$entry.id] = [string]$entry.ja
+    }
+
+    Emit-MachineEvent "qc" "start" @{total = $script:Entries.Count; offline = $true}
+
+    try {
+        $qc = Invoke-FinalTranslationQc $script:Entries $qcMap
+        if (@($qc.hard_errors).Count -gt 0) {
+            $preview = (@($qc.hard_errors) | Select-Object -First 8) -join ", "
+            throw "Final QC failed: $preview"
+        }
+
+        if (@($qc.japanese_ids).Count -gt 0) {
+            $preview = (@($qc.japanese_ids) | Select-Object -First 12) -join ","
+            Write-Warning ("QC found possible untranslated Japanese in " + @($qc.japanese_ids).Count + " subtitle(s); sample id(s): " + $preview)
+        }
+        if (@($qc.length_outlier_ids).Count -gt 0) {
+            $preview = (@($qc.length_outlier_ids) | Select-Object -First 12) -join ","
+            Write-Warning ("QC found unusual source/translation length ratios in " + @($qc.length_outlier_ids).Count + " subtitle(s); sample id(s): " + $preview)
+        }
+
+        Emit-MachineEvent "qc" "done" @{
+            total = $script:Entries.Count
+            hard_errors = 0
+            warnings = [int]$qc.warning_count
+            possible_untranslated_japanese = @($qc.japanese_ids).Count
+            length_outliers = @($qc.length_outlier_ids).Count
+            offline = $true
+        }
+
+        Write-Host "Offline QC passed: $($script:Entries.Count) indices and timestamps unchanged." -ForegroundColor Green
+        exit 0
+    }
+    catch {
+        Emit-MachineEvent "qc" "failed" @{message = $_.Exception.Message; offline = $true}
+        throw
+    }
+}
 
 $script:BaseUrl = $BaseUrl
 $script:ApiKey = $ApiKey
