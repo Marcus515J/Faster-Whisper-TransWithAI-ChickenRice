@@ -129,7 +129,7 @@ if ($inputInfo.PSIsContainer) {
 
 $runtimeRoot = (Resolve-Path -LiteralPath ([string]$job.runtime_root)).Path
 $outputDir = Split-Path $inputVideo -Parent
-if (Test-HasProperty $job "output_path" -and [string]$job.output_path) {
+if ((Test-HasProperty $job "output_path") -and [string]$job.output_path) {
     $finalOutput = [System.IO.Path]::GetFullPath([string]$job.output_path)
     $outputDir = Split-Path $finalOutput -Parent
 }
@@ -147,7 +147,7 @@ if ((Test-Path -LiteralPath $finalOutput) -and -not $overwriteFinal) {
 }
 
 $workRoot = Join-Path $outputDir ".chickenrice-work"
-if (Test-HasProperty $job "work_root" -and [string]$job.work_root) {
+if ((Test-HasProperty $job "work_root") -and [string]$job.work_root) {
     $workRoot = [System.IO.Path]::GetFullPath([string]$job.work_root)
 }
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
@@ -159,11 +159,11 @@ $generationValue = "generation_config.json5"
 $device = "cuda"
 $computeType = "auto"
 if ($null -ne $stage1) {
-    if (Test-HasProperty $stage1 "infer_executable" -and [string]$stage1.infer_executable) { $inferName = [string]$stage1.infer_executable }
-    if (Test-HasProperty $stage1 "model_path" -and [string]$stage1.model_path) { $modelValue = [string]$stage1.model_path }
-    if (Test-HasProperty $stage1 "generation_config" -and [string]$stage1.generation_config) { $generationValue = [string]$stage1.generation_config }
-    if (Test-HasProperty $stage1 "device" -and [string]$stage1.device) { $device = [string]$stage1.device }
-    if (Test-HasProperty $stage1 "compute_type" -and [string]$stage1.compute_type) { $computeType = [string]$stage1.compute_type }
+    if ((Test-HasProperty $stage1 "infer_executable") -and [string]$stage1.infer_executable) { $inferName = [string]$stage1.infer_executable }
+    if ((Test-HasProperty $stage1 "model_path") -and [string]$stage1.model_path) { $modelValue = [string]$stage1.model_path }
+    if ((Test-HasProperty $stage1 "generation_config") -and [string]$stage1.generation_config) { $generationValue = [string]$stage1.generation_config }
+    if ((Test-HasProperty $stage1 "device") -and [string]$stage1.device) { $device = [string]$stage1.device }
+    if ((Test-HasProperty $stage1 "compute_type") -and [string]$stage1.compute_type) { $computeType = [string]$stage1.compute_type }
 }
 
 $inferExe = Resolve-PathValue $inferName $runtimeRoot
@@ -225,13 +225,13 @@ $localModelPath = ""
 $batchSize = 20
 
 if ($null -ne $stage2) {
-    if (Test-HasProperty $stage2 "translator_script" -and [string]$stage2.translator_script) {
+    if ((Test-HasProperty $stage2 "translator_script") -and [string]$stage2.translator_script) {
         $translatorScript = Resolve-PathValue ([string]$stage2.translator_script) $PSScriptRoot
     }
-    if (Test-HasProperty $stage2 "base_url" -and [string]$stage2.base_url) { $baseUrl = [string]$stage2.base_url }
-    if (Test-HasProperty $stage2 "model_name" -and [string]$stage2.model_name) { $modelName = [string]$stage2.model_name }
-    if (Test-HasProperty $stage2 "llama_server_path" -and [string]$stage2.llama_server_path) { $llamaServerPath = [string]$stage2.llama_server_path }
-    if (Test-HasProperty $stage2 "model_path" -and [string]$stage2.model_path) { $localModelPath = [string]$stage2.model_path }
+    if ((Test-HasProperty $stage2 "base_url") -and [string]$stage2.base_url) { $baseUrl = [string]$stage2.base_url }
+    if ((Test-HasProperty $stage2 "model_name") -and [string]$stage2.model_name) { $modelName = [string]$stage2.model_name }
+    if ((Test-HasProperty $stage2 "llama_server_path") -and [string]$stage2.llama_server_path) { $llamaServerPath = [string]$stage2.llama_server_path }
+    if ((Test-HasProperty $stage2 "model_path") -and [string]$stage2.model_path) { $localModelPath = [string]$stage2.model_path }
     if (Test-HasProperty $stage2 "batch_size") { $batchSize = [int]$stage2.batch_size }
 }
 if (-not (Test-Path -LiteralPath $translatorScript)) { throw "Stage 2 translator script was not found: $translatorScript" }
@@ -239,7 +239,7 @@ if (-not $llamaServerPath) { throw "stage2.llama_server_path is required." }
 if (-not $localModelPath) { throw "stage2.model_path is required." }
 
 $promptConfigPath = ""
-if (Test-HasProperty $job "translation_profile" -and $null -ne $job.translation_profile) {
+if ((Test-HasProperty $job "translation_profile") -and $null -ne $job.translation_profile) {
     $profileJson = $job.translation_profile | ConvertTo-Json -Depth 10
     $profileHash = Get-Sha256Hex $profileJson
     $promptConfigPath = Join-Path $workDir ("prompt-" + $profileHash.Substring(0, 12) + ".json")
