@@ -88,7 +88,9 @@ function Parse-Srt([string]$Path) {
             text = $body
         }) | Out-Null
     }
-    return @($entries)
+    # Windows PowerShell 5.1 can throw "Argument types do not match"
+    # when array-subexpressing a Generic.List[object]. Convert explicitly.
+    return $entries.ToArray()
 }
 
 function Select-TargetTranscript(
@@ -157,13 +159,33 @@ function Invoke-SelfTest {
         throw "Timestamp conversion self-test failed."
     }
 
-    $sample = @(
-        [pscustomobject]@{start_ms=1000;end_ms=2000;text="A"},
-        [pscustomobject]@{start_ms=2500;end_ms=3500;text="B"}
+    $temp = Join-Path $env:TEMP (
+        "asr-segment-review-selftest-" +
+        [Guid]::NewGuid().ToString("N") +
+        ".srt"
     )
-    $picked = Select-TargetTranscript $sample 2400 2700
-    if ($picked -notmatch "B") {
-        throw "Target transcript selection self-test failed."
+    try {
+        [System.IO.File]::WriteAllText(
+            $temp,
+            "1" + [Environment]::NewLine +
+            "00:00:01,000 --> 00:00:02,000" + [Environment]::NewLine +
+            "A" + [Environment]::NewLine + [Environment]::NewLine +
+            "2" + [Environment]::NewLine +
+            "00:00:02,500 --> 00:00:03,500" + [Environment]::NewLine +
+            "B" + [Environment]::NewLine,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        $sample = @(Parse-Srt $temp)
+        if ($sample.Count -ne 2) {
+            throw "SRT parser self-test failed."
+        }
+        $picked = Select-TargetTranscript $sample 2400 2700
+        if ($picked -notmatch "B") {
+            throw "Target transcript selection self-test failed."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
     }
 
     Write-Host "ASR segment review bridge self-test passed." -ForegroundColor Green
