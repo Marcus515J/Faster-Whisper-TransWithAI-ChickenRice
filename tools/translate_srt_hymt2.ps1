@@ -176,21 +176,32 @@ function Get-ProgressPath([string]$Path, [string]$Fingerprint) {
     return $Path + "." + $Fingerprint.Substring(0, 12) + ".progress.json"
 }
 
-function Load-Progress([string]$Path) {
+function Load-Progress([string]$Path, [string]$ExpectedFingerprint) {
     $map = @{}
     if (-not (Test-Path $Path)) { return $map }
 
     try {
         $saved = (Read-Utf8Text $Path) | ConvertFrom-Json
-        foreach ($property in $saved.PSObject.Properties) {
-            $id = 0
-            if ([int]::TryParse($property.Name, [ref]$id)) {
-                $map[$id] = [string]$property.Value
-            }
-        }
     }
     catch {
         throw "Progress file is invalid: $Path"
+    }
+
+    if (-not ($saved.PSObject.Properties.Name -contains "fingerprint")) {
+        throw "Progress file has no translation fingerprint and will not be reused: $Path"
+    }
+    if ([string]$saved.fingerprint -ne $ExpectedFingerprint) {
+        throw "Progress fingerprint does not match the current source/model/prompt settings: $Path"
+    }
+    if (-not ($saved.PSObject.Properties.Name -contains "translations")) {
+        throw "Progress file is missing translations: $Path"
+    }
+
+    foreach ($property in $saved.translations.PSObject.Properties) {
+        $id = 0
+        if ([int]::TryParse($property.Name, [ref]$id)) {
+            $map[$id] = [string]$property.Value
+        }
     }
     return $map
 }
@@ -200,7 +211,14 @@ function Save-Progress([string]$Path, [hashtable]$Map) {
     foreach ($key in ($Map.Keys | Sort-Object {[int]$_})) {
         $ordered[[string]$key] = [string]$Map[$key]
     }
-    Write-Utf8NoBom $Path ($ordered | ConvertTo-Json -Depth 4)
+
+    $payload = [ordered]@{
+        schema_version = 2
+        fingerprint = $script:TranslationFingerprint
+        prompt_revision = $script:PromptRevision
+        translations = $ordered
+    }
+    Write-Utf8NoBom $Path ($payload | ConvertTo-Json -Depth 8)
 }
 
 function Normalize-Endpoint([string]$Url) {
@@ -626,7 +644,7 @@ Load-PromptConfig $PromptConfigPath
 $script:TranslationFingerprint = Get-TranslationFingerprint $sourceText
 $endpoint = Normalize-Endpoint $BaseUrl
 $script:ProgressPath = Get-ProgressPath $OutputPath $script:TranslationFingerprint
-$script:Translations = Load-Progress $script:ProgressPath
+$script:Translations = Load-Progress $script:ProgressPath $script:TranslationFingerprint
 
 foreach ($key in @($script:Translations.Keys)) {
     $id = [int]$key
