@@ -468,6 +468,37 @@ jobs:
           echo "Copied: RELEASE_NOTES_CN.md"
         fi
 
+        # Copy long-term recovery documentation.
+        if [ -f "长期恢复指南_日文转中文字幕.md" ]; then
+          cp "长期恢复指南_日文转中文字幕.md" dist/faster_whisper_transwithai_chickenrice/
+          echo "Copied: 长期恢复指南_日文转中文字幕.md"
+        fi
+
+        # Copy Stage 2 / Bridge tools directly into the package root so a
+        # downloaded release remains independently usable without git.
+        for tool_file in \
+          tools/translate_srt_api.ps1 \
+          tools/translate_srt_hymt2.ps1 \
+          tools/translate_srt_to_chinese.bat \
+          tools/translation_api_config.example.json \
+          tools/hymt2_prompt_config.example.json \
+          tools/pipeline_job.example.json \
+          tools/run_japanese_to_chinese_pipeline.ps1 \
+          tools/run_full_pipeline_local.ps1 \
+          tools/setup_stage2_runtime.ps1 \
+          tools/install_full_pipeline.ps1 \
+          tools/stage2_runtime_manifest.json \
+          tools/README_pipeline_bridge.md \
+          tools/README_stage2_translation.md; do
+          if [ -f "$tool_file" ]; then
+            cp "$tool_file" dist/faster_whisper_transwithai_chickenrice/
+            echo "Copied: $tool_file"
+          else
+            echo "ERROR: Required release tool missing: $tool_file"
+            exit 1
+          fi
+        done
+
         # Copy generation config to root directory (for easy user editing)
         if [ -f "generation_config.json5" ]; then
           cp "generation_config.json5" dist/faster_whisper_transwithai_chickenrice/
@@ -506,7 +537,7 @@ jobs:
 
         echo ""
         echo "Distribution contents:"
-        find dist/faster_whisper_transwithai_chickenrice -maxdepth 1 \( -name "*.bat" -o -name "*.txt" -o -name "*.md" -o -name "*.json5" \) -printf "%M %u %g %s %TY-%Tm-%Td %TH:%TM %p\n" 2>/dev/null || echo "No batch/text/config files found"
+        find dist/faster_whisper_transwithai_chickenrice -maxdepth 1 \( -name "*.bat" -o -name "*.ps1" -o -name "*.txt" -o -name "*.md" -o -name "*.json" -o -name "*.json5" \) -printf "%M %u %g %s %TY-%Tm-%Td %TH:%TM %p\n" 2>/dev/null || echo "No batch/text/config files found"
 
     - name: Test executable (CPU mode)
       shell: bash -el {0}
