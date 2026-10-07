@@ -124,12 +124,26 @@ function Load-PromptConfig([string]$Path) {
     }
 }
 
-function Get-PromptGuidance {
+function Get-PromptGuidance([string]$SourceText) {
     $sections = New-Object System.Collections.Generic.List[string]
-    $terms = @($script:TerminologyLine) + @($script:ExtraTerminologyLines)
-    $terms = @($terms | Where-Object { $_ -and ([string]$_).Trim() })
-    if ($terms.Count -gt 0) {
-        $sections.Add("Reference the following translations:`n" + ($terms -join "`n")) | Out-Null
+    $matchingTerms = New-Object System.Collections.Generic.List[string]
+
+    foreach ($line in (@($script:TerminologyLine) + @($script:ExtraTerminologyLines))) {
+        $termLine = ([string]$line).Trim()
+        if (-not $termLine) { continue }
+
+        $marker = " translates to "
+        $markerIndex = $termLine.IndexOf($marker, [System.StringComparison]::Ordinal)
+        if ($markerIndex -le 0) { continue }
+
+        $sourceTerm = $termLine.Substring(0, $markerIndex)
+        if ($SourceText -and $SourceText.Contains($sourceTerm)) {
+            $matchingTerms.Add($termLine) | Out-Null
+        }
+    }
+
+    if ($matchingTerms.Count -gt 0) {
+        $sections.Add("Reference the following translations:`n" + ($matchingTerms -join "`n")) | Out-Null
     }
     if ($script:StylePrompt -and $script:StylePrompt.Trim()) {
         $sections.Add("Translation style:`n" + $script:StylePrompt.Trim()) | Out-Null
@@ -428,7 +442,7 @@ function Invoke-DelimiterBatch([object[]]$Targets, [string]$Endpoint) {
     if ($Targets.Count -lt 2) { throw "Delimiter batch requires at least two targets." }
 
     $sourceText = (($Targets | ForEach-Object {[string]$_.ja}) -join ("`n" + $script:Delimiter + "`n"))
-    $guidance = Get-PromptGuidance
+    $guidance = Get-PromptGuidance $sourceText
 
     $prompt = @"
 Please accurately translate the following Japanese subtitle segments into Simplified Chinese.
@@ -462,7 +476,7 @@ $sourceText
 }
 
 function Invoke-SingleTarget([object]$Target, [string]$Endpoint) {
-    $guidance = Get-PromptGuidance
+    $guidance = Get-PromptGuidance ([string]$Target.ja)
     $prompt = @"
 Translate the following Japanese subtitle into Simplified Chinese. Note that you should only output the translated result without any additional explanation.
 
@@ -591,6 +605,15 @@ function Invoke-SelfTest {
 
     if ($script:TerminologyLine -ne ($script:TermJaSeishi + " translates to " + $script:TermZhSperm)) {
         throw "Self-test terminology construction failed."
+    }
+
+    $guidanceWithTerm = Get-PromptGuidance ("prefix " + $script:TermJaSeishi + " suffix")
+    $guidanceWithoutTerm = Get-PromptGuidance "similar but unrelated text"
+    if ($guidanceWithTerm -notlike ("*" + $script:TerminologyLine + "*")) {
+        throw "Self-test terminology activation failed."
+    }
+    if ($guidanceWithoutTerm -like ("*" + $script:TerminologyLine + "*")) {
+        throw "Self-test terminology leakage prevention failed."
     }
 
     $originalStyle = $script:StylePrompt
