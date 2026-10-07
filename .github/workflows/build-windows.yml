@@ -580,6 +580,18 @@ jobs:
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\run_japanese_to_chinese_pipeline.ps1" -SelfTest
         if ($LASTEXITCODE -ne 0) { throw "Pipeline Bridge self-test failed." }
 
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\setup_stage2_runtime.ps1" -SelfTest
+        if ($LASTEXITCODE -ne 0) { throw "Stage 2 runtime setup self-test failed." }
+
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install_full_pipeline.ps1" -SelfTest
+        if ($LASTEXITCODE -ne 0) { throw "Full pipeline installer self-test failed." }
+
+        if ("${{ matrix.model.model_variant }}" -eq "transcribe") {
+          if (-not (Test-Path -LiteralPath ".\运行(日文转录+HyMT2中文字幕).bat")) {
+            throw "Transcribe package is missing the full-pipeline BAT launcher."
+          }
+        }
+
     - name: Test executable (CPU mode)
       shell: bash -el {0}
       run: |
