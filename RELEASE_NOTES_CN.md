@@ -10,6 +10,72 @@
 
 ---
 
+## 🆕 v1.11.0：日文转录 + 本地 Hy-MT2 中文字幕完整链路
+
+本版本把已经实机验证的两阶段流程正式作为稳定 Bridge 发布：
+
+```text
+音视频
+  → whisper-ja-1.5B-ct2 日文 SRT
+  → 释放 Stage 1 / GPU
+  → llama.cpp + Hy-MT2
+  → 简体中文 SRT
+  → 时间轴锁定 + 自动 QC
+```
+
+### 本版重点
+
+- ✅ Stage 1 日文 SRT 缓存复用：只改翻译风格时不会重新跑 Whisper；
+- ✅ Stage 2 Hy-MT2 本地翻译，按需启动 / 停止 `llama-server`；
+- ✅ Stage 2 checkpoint 中断续跑；
+- ✅ 术语按实际 cue 命中隔离，避免同批字幕互相污染；
+- ✅ SRT 编号与时间轴严格锁定；
+- ✅ `@@CR_EVENT@@` 机器可读进度与 QC 事件；
+- ✅ 最终自动 QC 与 `-QcOnly` 离线检查；
+- ✅ Bridge / Prompt / Runtime 路径全部保留外部接口，后续可替换 Whisper、GGUF 翻译模型和 llama.cpp。
+
+### 最推荐下载
+
+如果目标是“日文影片 → 中文字幕”，优先下载与你显卡匹配的：
+
+`faster_whisper_transwithai_windows_<CUDA>-transcribe`
+
+v1.11 起，Release 的 `-transcribe` 包除了原来的 Stage 1 运行环境与日文模型，还会直接包含：
+
+- `run_japanese_to_chinese_pipeline.ps1`
+- `translate_srt_hymt2.ps1`
+- `run_full_pipeline_local.ps1`
+- `setup_stage2_runtime.ps1`
+- `install_full_pipeline.ps1`
+- `stage2_runtime_manifest.json`
+- `运行(日文转录+HyMT2中文字幕).bat`
+- `长期恢复指南_日文转中文字幕.md`
+
+### 从零恢复
+
+Release 还会额外提供两个独立资产：
+
+- `chickenrice_bridge_tools_v1.11.0.zip`：小型恢复包，适合电脑里什么都没有时作为第一入口；
+- `chickenrice_stage2_runtime_win_cuda12.zip`：本版本验证过的 llama.cpp Windows CUDA 12 便携 Runtime。
+
+从零恢复时，下载 Bridge Tools 后运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_full_pipeline.ps1 -InstallRoot "H:\AI\ChickenRice-HyMT2"
+```
+
+脚本会自动识别 NVIDIA CUDA、下载对应 `-transcribe` Release 包、校验 Release asset，再安装 Stage 2 Runtime 和 Hy-MT2。
+
+### 为什么 Hy-MT2 不直接塞进 Release
+
+当前验证模型 `tencent/Hy-MT2-7B-GGUF / HY-MT2-7B-Q8_0.gguf` 约 7.98 GB。为了避免每个 GPU Release 变体重复携带同一超大模型，本项目记录官方来源与 SHA-256，由安装脚本直接从腾讯官方 Hugging Face 下载并校验。
+
+完整恢复方式、固定依赖基线和未来换模型接口见：
+
+`长期恢复指南_日文转中文字幕.md`
+
+---
+
 ## 📦 发行包说明
 
 本发行版包含多个变体版本，请根据您的显卡型号选择合适的版本：
@@ -44,8 +110,9 @@
   - ✅ 音声优化 VAD（语音活动检测）ONNX 模型
   - ✅ whisper-base 特征提取文件（离线使用）
   - ✅ **TransWithAI/whisper-ja-1.5B-ct2** 日文原文转录 bf16 模型
-  - ✅ 仅包含转录 `.bat` 启动脚本
-- **适用场景**：开箱即用的日文原文转录
+  - ✅ 转录启动脚本
+  - ✅ v1.11 起内置 Hy-MT2 Stage 2 / Pipeline Bridge / Runtime 恢复脚本与长期恢复文档
+- **适用场景**：日文原文转录；也是“日文影片 → Hy-MT2 中文字幕”的推荐基础包
 
 ### 📌 文件命名规则
 
