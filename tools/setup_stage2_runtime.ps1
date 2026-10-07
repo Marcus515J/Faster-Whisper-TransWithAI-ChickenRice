@@ -197,6 +197,10 @@ try {
         }
         else {
             Write-Host "Release runtime asset not found; falling back to pinned upstream llama.cpp files."
+            New-Item -ItemType Directory -Path $Stage2Root -Force | Out-Null
+            if (Test-Path -LiteralPath $llamaRoot) {
+                Remove-Item -LiteralPath $llamaRoot -Recurse -Force
+            }
             New-Item -ItemType Directory -Path $llamaRoot -Force | Out-Null
 
             foreach ($item in @(
