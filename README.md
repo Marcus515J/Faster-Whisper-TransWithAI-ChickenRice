@@ -193,6 +193,31 @@ python modal_infer.py
 
 详细说明请参考 [使用说明](使用说明.txt) 中的 "Modal 云端推理模式" 部分。
 
+## 🔗 本 Fork：日文 SRT → Hy-MT2 中文字幕 Bridge
+
+本 Fork 额外提供一套独立的本地 Stage 2 / Pipeline Bridge，用于：
+
+```text
+音视频
+  -> whisper-ja-1.5B-ct2 日文 SRT
+  -> 释放 Stage 1 / GPU
+  -> 本地 Hy-MT2
+  -> 简体中文 SRT
+```
+
+Bridge 以 `job.json + PowerShell 子进程` 作为稳定边界，可被其他 GUI 浅层调用，同时本仓库仍可独立运行。当前支持：
+
+- Stage 1 日文 SRT 缓存复用；
+- 翻译角色、风格、影片背景和术语表；
+- Stage 2 checkpoint 中断续跑；
+- 术语按实际命中字幕隔离，避免跨 cue 污染；
+- cue 编号与时间轴锁定；
+- `@@CR_EVENT@@` 机器可读进度 / QC 事件；
+- 完成前自动 QC，以及现有日中 SRT 的离线 `-QcOnly` 检查；
+- 按需启动 / 停止本地 `llama-server`，不长期占用显存。
+
+入口与 job 配置说明见 [tools/README_pipeline_bridge.md](tools/README_pipeline_bridge.md)。
+
 ## 📖 详细文档 / Documentation
 
 - 📝 [使用说明](使用说明.txt) - 详细的使用指南和参数配置
