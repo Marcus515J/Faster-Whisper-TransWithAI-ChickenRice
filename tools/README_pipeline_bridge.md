@@ -65,6 +65,28 @@ Changing the Stage 1 model invalidates the Stage 1 cache identity. Changing the 
 
 The default terminology still contains the verified correction `せーし -> 精子`.
 
+## Stage 1 handoff for caller-side review
+
+The main `run_japanese_to_chinese_pipeline.ps1` job accepts an optional
+`stop_after_stage1=true` field. When enabled, the bridge performs or reuses Stage 1,
+emits `pipeline/stage1_ready` with the cached Japanese SRT path, and exits successfully
+without starting Hy-MT2. This is intended for callers that need to inspect or
+non-destructively review the Japanese SRT before the single official Stage 2 run.
+
+The cached Stage 1 SRT itself is never modified by this option.
+
+## Optional short-audio ASR review bridge
+
+For post-ASR quality review, the packaged runtime also exposes:
+
+`review_asr_segments.ps1 -JobConfigPath <job.json>`
+
+This helper is deliberately separate from the main Stage 1 -> Stage 2 pipeline. It accepts the original media plus a small list of suspicious subtitle time ranges, extracts only those short audio windows with FFmpeg, loads the existing Stage 1 Japanese ASR model once, re-transcribes all candidate clips in one run, and emits machine-readable `asr_audio_review/*` events.
+
+The helper never edits the cached Japanese SRT or the final Chinese SRT. Its output is second-opinion evidence for a caller such as SubtitleSyncTool. Consumers may combine that evidence with surrounding subtitles and a later text review, but must not treat it as ground truth.
+
+Each suspicious cue is now re-transcribed twice in the same Whisper load: a wider context window (default 3.5 seconds before/after) and a tight target window (default 0.8 seconds before/after). The bridge returns both texts separately so the caller can prefer the tight evidence while still using the context pass for disambiguation. Temporary WAV/SRT work files are removed after a successful run unless `keep_work_files=true`.
+
 ## Progress protocol
 
 The bridge writes normal human logs plus machine-readable lines prefixed with:
@@ -84,6 +106,7 @@ Existing Japanese/Chinese SRT pairs can be checked without loading Hy-MT2 by run
 - `translate_srt_hymt2.ps1`: Stage 2 translator.
 - `hymt2_prompt_config.example.json`: standalone Stage 2 prompt profile example.
 - `run_japanese_to_chinese_pipeline.ps1`: one-job pipeline bridge.
+- `review_asr_segments.ps1`: short-audio Japanese ASR second-opinion bridge for suspicious cue ranges.
 - `pipeline_job.example.json`: bridge job example.
 
 The bridge work directory is retained intentionally so a later style change can reuse Stage 1 output.

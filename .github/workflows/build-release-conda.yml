@@ -229,6 +229,7 @@ jobs:
           tools/setup_stage2_runtime.ps1 \
           tools/run_full_pipeline_local.ps1 \
           tools/run_japanese_to_chinese_pipeline.ps1 \
+          tools/review_asr_segments.ps1 \
           tools/translate_srt_hymt2.ps1 \
           tools/translate_srt_api.ps1 \
           tools/translate_srt_to_chinese.bat \

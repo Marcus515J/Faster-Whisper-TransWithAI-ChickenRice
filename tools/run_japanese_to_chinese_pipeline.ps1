@@ -112,6 +112,11 @@ function Invoke-SelfTest {
 
     Ensure-Directory $env:TEMP
 
+    $selfJob = [pscustomobject]@{stop_after_stage1 = $true}
+    if (-not [bool]$selfJob.stop_after_stage1) {
+        throw "Bridge self-test stop_after_stage1 check failed."
+    }
+
     Write-Host "ChickenRice pipeline bridge self-test passed." -ForegroundColor Green
 }
 
@@ -232,6 +237,16 @@ else {
         throw "Stage 1 completed but Japanese SRT was not created: $japaneseSrt"
     }
     Emit-BridgeEvent "asr" "done" "Japanese SRT created." $japaneseSrt
+}
+
+$stopAfterStage1 = $false
+if (Test-HasProperty $job "stop_after_stage1") {
+    $stopAfterStage1 = [bool]$job.stop_after_stage1
+}
+if ($stopAfterStage1) {
+    Emit-BridgeEvent "pipeline" "stage1_ready" "Stage 1 Japanese SRT is ready." $japaneseSrt
+    Write-Host "Stage 1 ready: $japaneseSrt" -ForegroundColor Green
+    exit 0
 }
 
 $stage2 = $job.stage2
