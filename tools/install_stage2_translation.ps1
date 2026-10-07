@@ -7,11 +7,20 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 if (-not $InstallRoot) {
-    $translatedFolder = ([char]0x7FFB).ToString() + ([char]0x8BD1).ToString()
-    $InstallRoot = Join-Path (Join-Path (Join-Path "H:\0H" $translatedFolder) "transwithai") "1.10.1-transcribe"
+    $candidate = Split-Path $PSScriptRoot -Parent
+    if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate "infer.exe"))) {
+        $InstallRoot = $candidate
+    }
+    elseif (Test-Path -LiteralPath (Join-Path $PSScriptRoot "infer.exe")) {
+        $InstallRoot = $PSScriptRoot
+    }
+    else {
+        throw "InstallRoot was not supplied and no ChickenRice install was detected beside this script. Pass -InstallRoot explicitly."
+    }
 }
 
-if (-not (Test-Path $InstallRoot)) {
+$InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
+if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
     throw "ChickenRice install directory was not found: $InstallRoot"
 }
 
@@ -54,6 +63,21 @@ $items = @(
         Name = "pipeline_job.example.json"
         Url = "$RepoRaw/pipeline_job.example.json"
         Destination = Join-Path $InstallRoot "pipeline_job.example.json"
+    },
+    @{
+        Name = "run_full_pipeline_local.ps1"
+        Url = "$RepoRaw/run_full_pipeline_local.ps1"
+        Destination = Join-Path $InstallRoot "run_full_pipeline_local.ps1"
+    },
+    @{
+        Name = "setup_stage2_runtime.ps1"
+        Url = "$RepoRaw/setup_stage2_runtime.ps1"
+        Destination = Join-Path $InstallRoot "setup_stage2_runtime.ps1"
+    },
+    @{
+        Name = "stage2_runtime_manifest.json"
+        Url = "$RepoRaw/stage2_runtime_manifest.json"
+        Destination = Join-Path $InstallRoot "stage2_runtime_manifest.json"
     }
 )
 
@@ -92,6 +116,8 @@ try {
     Write-Host "Generic launcher: $(Join-Path $InstallRoot 'translate_srt_to_chinese.bat')"
     Write-Host "Hy-MT2 script:    $(Join-Path $InstallRoot 'translate_srt_hymt2.ps1')"
     Write-Host "Pipeline bridge:  $(Join-Path $InstallRoot 'run_japanese_to_chinese_pipeline.ps1')"
+    Write-Host "Local launcher:   $(Join-Path $InstallRoot 'run_full_pipeline_local.ps1')"
+    Write-Host "Runtime setup:    $(Join-Path $InstallRoot 'setup_stage2_runtime.ps1')"
     Write-Host "Config:           $activeConfig"
 }
 finally {
