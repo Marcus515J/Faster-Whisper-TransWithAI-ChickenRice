@@ -8,6 +8,21 @@ This bridge is the stable shallow integration boundary for SubtitleSyncTool.
 
 The bridge keeps ChickenRice independently runnable. SubtitleSyncTool must not import ChickenRice ASR/CUDA/Hy-MT2 internals.
 
+## Fastest standalone use
+
+For a packaged `-transcribe` release:
+
+1. Run `setup_stage2_runtime.ps1` once. It installs the tested portable llama.cpp runtime and downloads/verifies the external Hy-MT2 model.
+2. Drag one video/audio file onto `运行(日文转录+HyMT2中文字幕).bat`.
+
+For a completely empty machine, download the small `chickenrice_bridge_tools_<version>.zip` release asset and run:
+
+`install_full_pipeline.ps1 -InstallRoot <target-directory>`
+
+The zero-state installer resolves the current release, downloads the matching NVIDIA transcribe package, then sets up Stage 2.
+
+Exact tested external dependencies and checksums are stored in `stage2_runtime_manifest.json`. The Chinese long-term recovery guide in the release root is `长期恢复指南_日文转中文字幕.md`.
+
 ## Pipeline
 
 ```text
@@ -36,6 +51,17 @@ The job can contain `translation_profile` with:
 Priority is fixed as:
 
 `source fidelity + terminology > subtitle structure > style/polishing`
+
+## Replaceable model/runtime contract
+
+The integration intentionally does not hard-code one future model.
+
+- Stage 1 model: `stage1.model_path`.
+- Stage 2 GGUF: `stage2.model_path` + `stage2.model_name`.
+- llama.cpp executable: `stage2.llama_server_path`.
+- Server protocol: OpenAI-compatible `/v1/chat/completions`.
+
+Changing the Stage 1 model invalidates the Stage 1 cache identity. Changing the Stage 2 model or prompt creates a different Stage 2 fingerprint, while the already cached Japanese SRT remains reusable.
 
 The default terminology still contains the verified correction `せーし -> 精子`.
 
