@@ -22,7 +22,7 @@ $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
 $script:ManagedServerProcess = $null
 $script:ManagedServerStdout = ""
 $script:ManagedServerStderr = ""
-$script:PromptRevision = "hymt2-stage2-v7"
+$script:PromptRevision = "hymt2-stage2-v8"
 $script:TermJaSeishi = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
 $script:TermZhSperm = ([string][char]0x7CBE) + ([string][char]0x5B50)
 $script:TerminologyLine = "$($script:TermJaSeishi) translates to $($script:TermZhSperm)"
@@ -160,7 +160,7 @@ function Get-PromptGuidance([string]$SourceText) {
         $sections.Add("Reference the following translations:`n" + ($matchingTerms -join "`n")) | Out-Null
     }
     if ($script:StylePrompt -and $script:StylePrompt.Trim()) {
-        $sections.Add("Translation style:`n" + $script:StylePrompt.Trim()) | Out-Null
+        $sections.Add("Translation style (wording only; it must not reduce semantic specificity or change the type of action/event):`n" + $script:StylePrompt.Trim()) | Out-Null
     }
     if ($script:FilmNotes -and $script:FilmNotes.Trim()) {
         $sections.Add("Film/context notes:`n" + $script:FilmNotes.Trim() + "`nUse these notes only when supported by the subtitle text. Do not invent details from the notes.") | Out-Null
@@ -466,11 +466,12 @@ $guidance
 
 Strict requirements:
 1. Terminology and source fidelity have higher priority than style or polishing instructions.
-2. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
-3. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
-4. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
-5. If Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-6. Output only the translated segments and delimiters. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
+2. Style may change phrasing only. It must not make a concrete source action, event, relationship, body part, or explicit meaning more generic, weaker, safer, or more euphemistic.
+3. Each source segment must correspond to exactly one translated segment in the same order. Do not merge or split segments.
+4. Translate each segment from its own Japanese text first. Do not import nouns, actions, topics, or meanings from neighboring segments unless they are explicitly supported by that segment.
+5. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
+6. If Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
+7. Output only the translated segments and delimiters. Do not output explanations, labels, markdown, JSON, timestamps, or subtitle indices.
 
 [Source Text]
 $sourceText
@@ -498,10 +499,11 @@ $guidance
 
 Strict requirements:
 1. Terminology and source fidelity have higher priority than style or polishing instructions.
-2. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
-3. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
-4. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
-5. Do not output labels, markdown, JSON, timestamps, or subtitle indices.
+2. Style may change phrasing only. It must not make a concrete source action, event, relationship, body part, or explicit meaning more generic, weaker, safer, or more euphemistic.
+3. Translate only what is supported by this subtitle text. Do not infer nouns, actions, topics, or meanings from unrelated context.
+4. Preserve intentional repetition, short replies, names, and explicit, sexual, vulgar, or colloquial wording. Do not sanitize, soften, or euphemize it.
+5. If the Japanese ASR text is garbled or uncertain, translate conservatively. Do not invent, repair, or add unsupported meaning.
+6. Do not output labels, markdown, JSON, timestamps, or subtitle indices.
 
 $([string]$Target.ja)
 "@
