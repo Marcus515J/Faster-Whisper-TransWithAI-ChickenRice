@@ -158,8 +158,19 @@ try {
         }
 
         Write-Host "Resolving Stage 2 runtime release..."
-        $release = Invoke-RestMethod -Uri $releaseApi -Headers @{"User-Agent"="ChickenRice-Stage2-Setup"}
-        $runtimeAsset = @($release.assets | Where-Object { $_.name -eq $RuntimeAssetName } | Select-Object -First 1)
+        $headers = @{"User-Agent"="ChickenRice-Stage2-Setup"}
+        $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers
+        if (-not $release.assets_url) {
+            throw "GitHub release response did not contain assets_url."
+        }
+        $releaseAssets = @(
+            Invoke-RestMethod -Uri ($release.assets_url + "?per_page=100") -Headers $headers
+        )
+        $runtimeAsset = @(
+            $releaseAssets |
+                Where-Object { $_.name -eq $RuntimeAssetName } |
+                Select-Object -First 1
+        )
 
         if ($runtimeAsset.Count -gt 0) {
             $runtimeZip = Join-Path $temp $RuntimeAssetName
