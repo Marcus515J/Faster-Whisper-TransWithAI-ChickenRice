@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "release_line": "v1.11",
+  "stage2_protocol": "OpenAI-compatible /v1/chat/completions via llama-server",
+  "llama_cpp": {
+    "tested_tag": "b11429",
+    "stable_alias": "v0.6.0",
+    "commit": "d812350",
+    "windows_cuda12": {
+      "binaries": {
+        "name": "llama-b11429-bin-win-cuda-12.4-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-win-cuda-12.4-x64.zip",
+        "sha256": "dd6df685c1024e6aa55ca55ad35038692d5e284d4dc895e7a646c3245d3d14ff"
+      },
+      "cuda_runtime": {
+        "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/cudart-llama-bin-win-cuda-12.4-x64.zip",
+        "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
+      }
+    }
+  },
+  "translation_model": {
+    "family": "Hy-MT2",
+    "provider": "Tencent Hunyuan",
+    "repository": "tencent/Hy-MT2-7B-GGUF",
+    "file": "HY-MT2-7B-Q8_0.gguf",
+    "url": "https://huggingface.co/tencent/Hy-MT2-7B-GGUF/resolve/main/HY-MT2-7B-Q8_0.gguf?download=true",
+    "size_bytes": 7981928896,
+    "sha256": "58b3ad55dd6f6fa08c695cddc34fb5f8f708a844f78ae10508071914b0ed67c0",
+    "model_name": "HY-MT2-7B-Q8_0",
+    "bundled_in_release": false,
+    "replacement_contract": "Any llama.cpp-compatible translation GGUF can be selected through stage2.model_path + stage2.model_name; changing model/prompt changes the Stage 2 fingerprint but does not invalidate Stage 1 ASR cache."
+  },
+  "stage1_model": {
+    "recommended_package_suffix": "-transcribe",
+    "repository": "TransWithAI/whisper-ja-1.5B-ct2",
+    "bundled_in_transcribe_package": true,
+    "replaceable_via": "stage1.model_path / infer.exe --model_name_or_path"
+  }
+}
