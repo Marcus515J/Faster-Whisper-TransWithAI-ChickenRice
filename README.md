@@ -218,11 +218,36 @@ Bridge 以 `job.json + PowerShell 子进程` 作为稳定边界，可被其他 G
 
 入口与 job 配置说明见 [tools/README_pipeline_bridge.md](tools/README_pipeline_bridge.md)。
 
+### v1.11 起的推荐使用方式
+
+如果目标是“日文影片 → 简体中文字幕”，推荐直接使用与显卡匹配的 **`-transcribe` Release 包**。该包包含 Stage 1 日文模型以及全部 Bridge / Stage 2 小型脚本；Hy-MT2 大模型不重复打进每个 GPU 包，而由恢复脚本从腾讯官方模型仓库下载。
+
+完全没有本地环境时，优先下载 Release 中的小型：
+
+`chickenrice_bridge_tools_<版本>.zip`
+
+然后运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_full_pipeline.ps1 -InstallRoot "H:\AI\ChickenRice-HyMT2"
+```
+
+本版本还单独提供 `chickenrice_stage2_runtime_win_cuda12.zip`，内含实测过的 llama.cpp Windows CUDA 12 便携 Runtime；Hy-MT2 Q8 约 7.98 GB，因此保留为官方外部下载并进行 SHA-256 校验。
+
+未来替换模型时不需要改死代码：
+
+- Stage 1：更换 `stage1.model_path` / `--model_name_or_path`；
+- Stage 2：更换 `stage2.model_path`、`stage2.model_name`；
+- llama.cpp：更换 `stage2.llama_server_path`。
+
+详细的“电脑全部重装以后怎么恢复”见 [长期恢复指南_日文转中文字幕.md](长期恢复指南_日文转中文字幕.md)。
+
 ## 📖 详细文档 / Documentation
 
 - 📝 [使用说明](使用说明.txt) - 详细的使用指南和参数配置
 - 📋 [发行说明](RELEASE_NOTES_CN.md) - 版本更新日志和选择指南
 - ⚙️ [生成配置](generation_config.json5) - 转录参数配置文件
+- ♻️ [长期恢复指南：日文转录 + Hy-MT2 中文字幕](长期恢复指南_日文转中文字幕.md) - 从零恢复、依赖基线和未来换模型接口
 
 ## 🛠️ 高级配置 / Advanced Configuration
 
