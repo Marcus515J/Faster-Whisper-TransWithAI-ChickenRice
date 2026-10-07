@@ -45,7 +45,11 @@ The bridge writes normal human logs plus machine-readable lines prefixed with:
 
 `@@CR_EVENT@@`
 
-Consumers should parse only prefixed lines as JSON. Current events cover ASR start/reuse/done/failure, translation start/done/failure and final pipeline completion.
+Consumers should parse only prefixed lines as JSON. Current events cover ASR start/reuse/done/failure, translation start/progress/done/failure, QC start/done/failure and final pipeline completion.
+
+Stage 2 progress events include `completed`, `total` and `percent`. A resumed checkpoint also emits `resumed: true`, allowing the UI to restore progress immediately without parsing human log text.
+
+Final QC runs before the Chinese SRT replaces the destination file. Hard failures include missing/empty translations, delimiter leakage, Markdown/code-fence leakage, obvious JSON payloads and model-explanation prefixes. Possible untranslated Japanese and extreme source/translation length ratios are warnings only, because legitimate names or unusual dialogue can otherwise create false positives. Timeline/index equality remains a hard invariant.
 
 ## Files
 
