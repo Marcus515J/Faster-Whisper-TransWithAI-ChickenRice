@@ -97,17 +97,34 @@ function Select-TargetTranscript(
     [object[]]$Entries,
     [int64]$TargetStartMs,
     [int64]$TargetEndMs,
-    [int]$MarginMs = 900
+    [int]$ToleranceMs = 120
 ) {
     if (@($Entries).Count -eq 0) { return "" }
 
-    $margin = [Math]::Max(0, $MarginMs)
-    $selected = @(
-        $Entries | Where-Object {
-            ([int64]$_.end_ms -ge ($TargetStartMs - $margin)) -and
-            ([int64]$_.start_ms -le ($TargetEndMs + $margin))
+    $targetStart = [Math]::Max([int64]0, $TargetStartMs - [Math]::Max(0, $ToleranceMs))
+    $targetEnd = $TargetEndMs + [Math]::Max(0, $ToleranceMs)
+    $selected = New-Object System.Collections.Generic.List[object]
+
+    foreach ($entry in $Entries) {
+        $entryStart = [int64]$entry.start_ms
+        $entryEnd = [int64]$entry.end_ms
+        $overlapStart = [Math]::Max($entryStart, $targetStart)
+        $overlapEnd = [Math]::Min($entryEnd, $targetEnd)
+        $overlap = $overlapEnd - $overlapStart
+        if ($overlap -le 0) { continue }
+
+        $entryDuration = [Math]::Max([int64]1, $entryEnd - $entryStart)
+        $entryMid = ($entryStart + $entryEnd) / 2.0
+        $midInside = (
+            $entryMid -ge $TargetStartMs -and
+            $entryMid -le $TargetEndMs
+        )
+        $overlapRatio = [double]$overlap / [double]$entryDuration
+
+        if ($midInside -or $overlapRatio -ge 0.20) {
+            $selected.Add($entry) | Out-Null
         }
-    )
+    }
 
     if ($selected.Count -eq 0) {
         $targetMid = ($TargetStartMs + $TargetEndMs) / 2.0
@@ -118,11 +135,11 @@ function Select-TargetTranscript(
             } |
             Select-Object -First 1
         if ($null -ne $nearest) {
-            $selected = @($nearest)
+            $selected.Add($nearest) | Out-Null
         }
     }
 
-    return ((@($selected) | ForEach-Object { [string]$_.text }) -join " ").Trim()
+    return (($selected.ToArray() | ForEach-Object { [string]$_.text }) -join " ").Trim()
 }
 
 function Find-Ffmpeg([string]$Requested, [string]$RuntimeRoot) {
@@ -180,7 +197,7 @@ function Invoke-SelfTest {
         if ($sample.Count -ne 2) {
             throw "SRT parser self-test failed."
         }
-        $picked = Select-TargetTranscript $sample 2400 2700 900
+        $picked = Select-TargetTranscript $sample 2400 2700 120
         if ($picked -notmatch "B") {
             throw "Target transcript selection self-test failed."
         }
@@ -409,7 +426,7 @@ try {
 
         if (Test-Path -LiteralPath $contextSrt) {
             $contextEntries = Parse-Srt $contextSrt
-            $contextText = Select-TargetTranscript $contextEntries ([int64]$record.context_target_start_ms) ([int64]$record.context_target_end_ms) 900
+            $contextText = Select-TargetTranscript $contextEntries ([int64]$record.context_target_start_ms) ([int64]$record.context_target_end_ms) 120
         }
         else {
             $errors.Add("Context clip produced no SRT.") | Out-Null
@@ -417,7 +434,7 @@ try {
 
         if (Test-Path -LiteralPath $tightSrt) {
             $tightEntries = Parse-Srt $tightSrt
-            $tightText = Select-TargetTranscript $tightEntries ([int64]$record.tight_target_start_ms) ([int64]$record.tight_target_end_ms) 500
+            $tightText = Select-TargetTranscript $tightEntries ([int64]$record.tight_target_start_ms) ([int64]$record.tight_target_end_ms) 120
             if (-not $tightText -and $tightEntries.Count -gt 0) {
                 $tightText = (($tightEntries | ForEach-Object { [string]$_.text }) -join " ").Trim()
             }
