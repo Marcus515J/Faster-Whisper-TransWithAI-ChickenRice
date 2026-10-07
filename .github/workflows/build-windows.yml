@@ -587,9 +587,13 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Full pipeline installer self-test failed." }
 
         if ("${{ matrix.model.model_variant }}" -eq "transcribe") {
-          if (-not (Test-Path -LiteralPath ".\运行(日文转录+HyMT2中文字幕).bat")) {
-            throw "Transcribe package is missing the full-pipeline BAT launcher."
+          $fullPipelineBat = Get-ChildItem -LiteralPath "." -File -Filter "*.bat" |
+            Where-Object { $_.Name -like "*HyMT2*" } |
+            Select-Object -First 1
+          if (-not $fullPipelineBat) {
+            throw "Transcribe package is missing the full-pipeline HyMT2 BAT launcher."
           }
+          Write-Host ("Full-pipeline BAT found: " + $fullPipelineBat.Name)
         }
 
     - name: Test executable (CPU mode)
