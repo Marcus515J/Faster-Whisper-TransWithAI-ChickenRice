@@ -174,7 +174,12 @@ if (Test-Path -LiteralPath $InstallRoot) {
     }
 }
 
-$downloadRoot = Join-Path (Split-Path $InstallRoot -Parent) "_chickenrice-downloads"
+$installParent = Split-Path $InstallRoot -Parent
+if (-not $installParent) {
+    throw "Could not resolve InstallRoot parent: $InstallRoot"
+}
+New-Item -ItemType Directory -Path $installParent -Force | Out-Null
+$downloadRoot = Join-Path $installParent "_chickenrice-downloads"
 New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
 $archivePath = Join-Path $downloadRoot $archiveBase
 
@@ -243,7 +248,7 @@ try {
     Write-Host "Full ChickenRice + Hy-MT2 pipeline is ready." -ForegroundColor Green
     Write-Host "InstallRoot: $InstallRoot"
     Write-Host "Launcher:    $(Join-Path $InstallRoot 'run_full_pipeline_local.ps1')"
-    Write-Host "Double-click: $(Join-Path $InstallRoot 'run_full_pipeline_local.bat')"
+    Write-Host "Double-click the bundled full-pipeline BAT in InstallRoot."
 }
 finally {
     if (-not $KeepDownloads) {
