@@ -74,6 +74,18 @@ jobs:
       shell: powershell
       run: .\tools\translate_srt_api.ps1 -SelfTest
 
+    - name: Recovery tooling self-tests
+      shell: powershell
+      run: |
+        .\tools\translate_srt_hymt2.ps1 -SelfTest
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .\tools\run_japanese_to_chinese_pipeline.ps1 -SelfTest
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .\tools\setup_stage2_runtime.ps1 -SelfTest
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        .\tools\install_full_pipeline.ps1 -SelfTest
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   # Full packaging is intentionally manual here. Releases still run the complete
   # CUDA/ROCm + model matrix through build-release-conda.yml.
   build-windows:
