@@ -23,6 +23,13 @@
 - 拖放到 "运行(转录)(GPU,低显存模式).bat" - 低显存GPU转录（int8_float16）
 - 拖放到 "运行(转录)(GPU,高显存加速模式).bat" - 批处理加速转录（建议8GB+显存）
 
+v1.11 完整日文转中文字幕模式（推荐使用 transcribe Release 包）:
+- 首次运行 "setup_stage2_runtime.ps1"，安装/恢复本版本验证过的 llama.cpp Runtime，并下载校验 Hy-MT2 模型。
+- 之后把影片拖放到 "运行(日文转录+HyMT2中文字幕).bat"。
+- 流程为：日文转录 → 释放 Stage 1 → Hy-MT2 简体中文翻译 → 时间轴锁定 → 自动 QC。
+- 只修改翻译风格时会复用日文 SRT，不重新跑 Whisper。
+- 从完全空白电脑恢复时，请先看 "长期恢复指南_日文转中文字幕.md"；也可以下载 Release 的 chickenrice_bridge_tools_<版本>.zip 后运行 install_full_pipeline.ps1。
+
 GPU模式支持NVIDIA CUDA版本和AMD ROCm/HIP版本。建议先更新显卡驱动到最新版本。
 
 输出到指定文件夹:

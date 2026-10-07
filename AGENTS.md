@@ -51,3 +51,14 @@
 - 复制 SubtitleSyncTool 的 UI、Anchor、ASS 模板或双语合并实现进本仓库；
 - 把模型、CUDA 运行时或本机缓存提交到另一个仓库；
 - 因整合而自动共享两个项目未明确授权的参数、测试结论、Issue 或发布状态。
+
+
+## v1.11+ 发布与长期恢复规则
+
+- 正式 Release 版本由 `release/VERSION` 控制；合并对该文件的版本更新后，`.github/workflows/build-release-conda.yml` 自动构建、实测并发布。不要手工创建一个缺少二进制资产的同名 Release。
+- “日文影片 → Hy-MT2 中文字幕”的推荐基础包是 `-transcribe`。所有 Bridge / Stage 2 小型脚本、恢复文档、模型清单必须随 Windows Release 包一起复制，不能只留在源码 `tools/`。
+- 额外发布 `chickenrice_bridge_tools_<version>.zip` 作为零状态恢复入口，和 `chickenrice_stage2_runtime_win_cuda12.zip` 作为已验证 llama.cpp 便携 Runtime。
+- Hy-MT2 Q8 等超大翻译模型不重复打入各 GPU 发行包；固定来源、大小、SHA-256 和已验证 llama.cpp 基线写在 `tools/stage2_runtime_manifest.json`，恢复脚本负责下载与校验。
+- Stage 1 模型通过 `stage1.model_path`，Stage 2 模型通过 `stage2.model_path/model_name`，llama.cpp 通过 `stage2.llama_server_path` 替换。不得为了某次本机环境把这些路径写死进 GUI 或 Bridge 契约。
+- 发布前必须让 Windows PowerShell 5.1 对 Bridge / 安装脚本做语法检查，并运行 Stage 2 / Bridge SelfTest；正式大模型运行仍以维护者实机验收为准。
+- 从完全空白电脑恢复的正本说明是根目录 `长期恢复指南_日文转中文字幕.md`。涉及依赖、模型或发布布局变化时必须同步更新该文件。
