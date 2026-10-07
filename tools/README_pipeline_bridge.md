@@ -65,6 +65,16 @@ Changing the Stage 1 model invalidates the Stage 1 cache identity. Changing the 
 
 The default terminology still contains the verified correction `せーし -> 精子`.
 
+## Stage 1 handoff for caller-side review
+
+The main `run_japanese_to_chinese_pipeline.ps1` job accepts an optional
+`stop_after_stage1=true` field. When enabled, the bridge performs or reuses Stage 1,
+emits `pipeline/stage1_ready` with the cached Japanese SRT path, and exits successfully
+without starting Hy-MT2. This is intended for callers that need to inspect or
+non-destructively review the Japanese SRT before the single official Stage 2 run.
+
+The cached Stage 1 SRT itself is never modified by this option.
+
 ## Optional short-audio ASR review bridge
 
 For post-ASR quality review, the packaged runtime also exposes:
