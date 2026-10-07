@@ -22,7 +22,7 @@ $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
 $script:ManagedServerProcess = $null
 $script:ManagedServerStdout = ""
 $script:ManagedServerStderr = ""
-$script:PromptRevision = "hymt2-stage2-v6"
+$script:PromptRevision = "hymt2-stage2-v7"
 $script:TermJaSeishi = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
 $script:TermZhSperm = ([string][char]0x7CBE) + ([string][char]0x5B50)
 $script:TerminologyLine = "$($script:TermJaSeishi) translates to $($script:TermZhSperm)"
@@ -632,8 +632,17 @@ function Invoke-SelfTest {
 
     $termTarget = [pscustomobject]@{ja = ("prefix " + $script:TermJaSeishi + " suffix")}
     $plainTarget = [pscustomobject]@{ja = "similar but unrelated text"}
-    if ((Get-TerminologySignature $termTarget) -eq (Get-TerminologySignature $plainTarget)) {
+    $termSignature = [string](Get-TerminologySignature $termTarget)
+    $plainSignature = [string](Get-TerminologySignature $plainTarget)
+    if ($termSignature -eq $plainSignature) {
         throw "Self-test terminology grouping failed."
+    }
+
+    $groupTest = @{}
+    $groupTest[$plainSignature] = @($plainTarget)
+    $groupTest[$termSignature] = @($termTarget)
+    if (@($groupTest[$plainSignature]).Count -ne 1 -or @($groupTest[$termSignature]).Count -ne 1) {
+        throw "Self-test PowerShell 5.1 terminology group storage failed."
     }
 
     $originalStyle = $script:StylePrompt
@@ -733,17 +742,23 @@ try {
 
         $batchTargets = @($pending | Where-Object {-not (Test-ShouldTranslateSingle $_)})
         if ($batchTargets.Count -gt 0) {
-            $terminologyGroups = [ordered]@{}
+            $terminologyGroups = @{}
+            $terminologyGroupOrder = @()
+
             foreach ($target in $batchTargets) {
-                $signature = Get-TerminologySignature $target
-                if (-not $terminologyGroups.Contains($signature)) {
-                    $terminologyGroups[$signature] = New-Object System.Collections.Generic.List[object]
+                $signature = [string](Get-TerminologySignature $target)
+
+                if (-not $terminologyGroups.ContainsKey($signature)) {
+                    $terminologyGroups[$signature] = @()
+                    $terminologyGroupOrder += @($signature)
                 }
-                $terminologyGroups[$signature].Add($target) | Out-Null
+
+                $terminologyGroups[$signature] = @($terminologyGroups[$signature]) + @($target)
             }
 
-            foreach ($signature in $terminologyGroups.Keys) {
-                Invoke-ResilientGroup @($terminologyGroups[$signature]) $endpoint
+            foreach ($signature in $terminologyGroupOrder) {
+                $groupTargets = @($terminologyGroups[$signature])
+                Invoke-ResilientGroup $groupTargets $endpoint
             }
         }
 
