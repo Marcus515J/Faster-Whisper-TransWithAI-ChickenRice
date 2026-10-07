@@ -51,6 +51,8 @@ Stage 2 progress events include `completed`, `total` and `percent`. A resumed ch
 
 Final QC runs before the Chinese SRT replaces the destination file. Hard failures include missing/empty translations, delimiter leakage, Markdown/code-fence leakage, obvious JSON payloads and model-explanation prefixes. Possible untranslated Japanese and extreme source/translation length ratios are warnings only, because legitimate names or unusual dialogue can otherwise create false positives. Timeline/index equality remains a hard invariant.
 
+Existing Japanese/Chinese SRT pairs can be checked without loading Hy-MT2 by running `translate_srt_hymt2.ps1 -InputPath <ja.srt> -OutputPath <zh.srt> -QcOnly`. This emits the same `qc/*` machine events and never starts `llama-server`.
+
 ## Files
 
 - `translate_srt_hymt2.ps1`: Stage 2 translator.
