@@ -628,7 +628,7 @@ function Invoke-FinalTranslationQc([object[]]$Entries, [hashtable]$Translations)
             $hardErrors += @("model_explanation_prefix:" + $id)
         }
 
-        if ($translated -match "^\s*\{\s*`"[^`"]+`"\s*:" -or $translated -match "^\s*\[\s*\{\s*`"[^`"]+`"\s*:") {
+        if (($trimmed.StartsWith("{") -or $trimmed.StartsWith("[{")) -and $trimmed.Contains('":')) {
             $hardErrors += @("json_artifact:" + $id)
         }
 
