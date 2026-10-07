@@ -37,6 +37,22 @@ function Resolve-PathValue([string]$Value, [string]$BasePath) {
     return [System.IO.Path]::GetFullPath((Join-Path $BasePath $Value))
 }
 
+function Ensure-Directory([string]$Path) {
+    if (-not $Path) {
+        throw "Directory path is empty."
+    }
+
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path
+        if (-not $item.PSIsContainer) {
+            throw "Expected a directory but found a file: $Path"
+        }
+        return
+    }
+
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+}
+
 function Emit-BridgeEvent(
     [string]$Stage,
     [string]$State,
@@ -94,6 +110,8 @@ function Invoke-SelfTest {
         throw "Bridge self-test path resolution failed."
     }
 
+    Ensure-Directory $env:TEMP
+
     Write-Host "ChickenRice pipeline bridge self-test passed." -ForegroundColor Green
 }
 
@@ -136,7 +154,7 @@ if ((Test-HasProperty $job "output_path") -and [string]$job.output_path) {
 else {
     $finalOutput = Join-Path $outputDir ([System.IO.Path]::GetFileNameWithoutExtension($inputVideo) + ".zh.srt")
 }
-New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+Ensure-Directory $outputDir
 
 $overwriteFinal = $false
 if (Test-HasProperty $job "overwrite_final") {
@@ -150,7 +168,7 @@ $workRoot = Join-Path $outputDir ".chickenrice-work"
 if ((Test-HasProperty $job "work_root") -and [string]$job.work_root) {
     $workRoot = [System.IO.Path]::GetFullPath([string]$job.work_root)
 }
-New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
+Ensure-Directory $workRoot
 
 $stage1 = $job.stage1
 $inferName = "infer.exe"
@@ -176,7 +194,7 @@ if (-not (Test-Path -LiteralPath $generationConfig)) { throw "Stage 1 generation
 $stage1Fingerprint = Get-Stage1Fingerprint $inputInfo $modelPath $generationConfig $device $computeType
 $stem = [System.IO.Path]::GetFileNameWithoutExtension($inputVideo)
 $workDir = Join-Path $workRoot ($stem + "-" + $stage1Fingerprint.Substring(0, 12))
-New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+Ensure-Directory $workDir
 $japaneseSrt = Join-Path $workDir ($stem + ".srt")
 
 if (Test-Path -LiteralPath $japaneseSrt) {
