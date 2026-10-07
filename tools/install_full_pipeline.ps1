@@ -110,6 +110,26 @@ function Assert-AssetDigest(
     }
 }
 
+function Expand-LargeZip(
+    [string]$Archive,
+    [string]$Destination
+) {
+    $tar = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+    if (-not $tar) {
+        $tar = Get-Command "tar" -ErrorAction SilentlyContinue
+    }
+
+    if ($tar) {
+        & $tar.Source -xf $Archive -C $Destination
+        if ($LASTEXITCODE -ne 0) {
+            throw "Archive extraction failed with exit code $LASTEXITCODE."
+        }
+        return
+    }
+
+    Expand-Archive -LiteralPath $Archive -DestinationPath $Destination -Force
+}
+
 function Join-Parts(
     [string[]]$Parts,
     [string]$Destination
@@ -156,7 +176,7 @@ function Invoke-SelfTest {
 
         $mock = [pscustomobject]@{
             name = "test.bin"
-            digest = "sha256:" + ("0" * 64)
+            digest = "sha256:" + (("0" * 64) -join "")
         }
         if ([string]$mock.digest -notmatch '^sha256:[0-9a-f]{64}
     $InstallRoot = Join-Path (Get-Location).Path "ChickenRice-HyMT2"
@@ -232,7 +252,7 @@ try {
     New-Item -ItemType Directory -Path $extract -Force | Out-Null
 
     Write-Host "Extracting Stage 1 package..."
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $extract -Force
+    Expand-LargeZip $archivePath $extract
     if (-not (Test-Path -LiteralPath (Join-Path $extract "infer.exe"))) {
         throw "Extracted transcribe package is missing infer.exe."
     }
