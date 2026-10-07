@@ -595,6 +595,64 @@ function Invoke-ResilientGroup([object[]]$Targets, [string]$Endpoint) {
     Invoke-ResilientGroup $right $Endpoint
 }
 
+function Invoke-FinalTranslationQc([object[]]$Entries, [hashtable]$Translations) {
+    $hardErrors = @()
+    $japaneseIds = @()
+    $lengthOutlierIds = @()
+
+    foreach ($entry in $Entries) {
+        $id = [int]$entry.id
+        if (-not $Translations.ContainsKey($id)) {
+            $hardErrors += @("missing_translation:" + $id)
+            continue
+        }
+
+        $source = [string]$entry.ja
+        $translated = [string]$Translations[$id]
+        $trimmed = $translated.Trim()
+
+        if (-not $trimmed -or $trimmed -eq ([string][char]0x200B)) {
+            $hardErrors += @("empty_translation:" + $id)
+            continue
+        }
+
+        if ($translated.Contains($script:Delimiter)) {
+            $hardErrors += @("delimiter_artifact:" + $id)
+        }
+
+        if ($translated -match "\x60{3}|~{3}") {
+            $hardErrors += @("markdown_fence:" + $id)
+        }
+
+        if ($translated -match "(?i)^\s*(?:here is|translation|translated text|output|result|\u7ffb\u8bd1|\u8bd1\u6587)\s*[:\uFF1A]") {
+            $hardErrors += @("model_explanation_prefix:" + $id)
+        }
+
+        if ($translated -match "^\s*\{\s*`"[^`"]+`"\s*:" -or $translated -match "^\s*\[\s*\{\s*`"[^`"]+`"\s*:") {
+            $hardErrors += @("json_artifact:" + $id)
+        }
+
+        if ($translated -match "[\u3040-\u30ff]") {
+            $japaneseIds += @($id)
+        }
+
+        $sourceCompact = [regex]::Replace($source, "\s", "")
+        $translatedCompact = [regex]::Replace($translated, "\s", "")
+        if ($sourceCompact.Length -ge 10 -and $translatedCompact.Length -gt 0) {
+            $ratio = $translatedCompact.Length / [double]$sourceCompact.Length
+            if ($ratio -lt 0.15 -or $ratio -gt 3.5) {
+                $lengthOutlierIds += @($id)
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        hard_errors = @($hardErrors)
+        japanese_ids = @($japaneseIds)
+        length_outlier_ids = @($lengthOutlierIds)
+        warning_count = (@($japaneseIds).Count + @($lengthOutlierIds).Count)
+    }
+}
 function Build-Srt([object[]]$Entries, [hashtable]$Translations) {
     $blocks = New-Object System.Collections.Generic.List[string]
     foreach ($entry in $Entries) {
@@ -683,6 +741,16 @@ function Invoke-SelfTest {
     $script:StylePrompt = $originalStyle
     if ($fingerprintA.Length -ne 64 -or $fingerprintA -eq $fingerprintB) {
         throw "Self-test translation fingerprint failed."
+    }
+
+    $qcGood = Invoke-FinalTranslationQc $entries @{1 = "alpha"; 2 = "beta"}
+    if (@($qcGood.hard_errors).Count -ne 0) {
+        throw "Self-test final QC rejected clean translations."
+    }
+
+    $qcBad = Invoke-FinalTranslationQc $entries @{1 = ""; 2 = ("beta" + $script:Delimiter)}
+    if (@($qcBad.hard_errors).Count -lt 2) {
+        throw "Self-test final QC failed to detect hard errors."
     }
 
     Write-Host "Hy-MT2 translator self-test passed." -ForegroundColor Green
@@ -812,8 +880,40 @@ try {
         }
     }
 
-    $outputText = Build-Srt $script:Entries $script:Translations
-    Assert-TimelineLocked $script:Entries $outputText
+    Emit-MachineEvent "qc" "start" @{total = $script:Entries.Count}
+
+    try {
+        $qc = Invoke-FinalTranslationQc $script:Entries $script:Translations
+        if (@($qc.hard_errors).Count -gt 0) {
+            $preview = (@($qc.hard_errors) | Select-Object -First 8) -join ", "
+            throw "Final QC failed: $preview"
+        }
+
+        $outputText = Build-Srt $script:Entries $script:Translations
+        Assert-TimelineLocked $script:Entries $outputText
+
+        if (@($qc.japanese_ids).Count -gt 0) {
+            $preview = (@($qc.japanese_ids) | Select-Object -First 12) -join ","
+            Write-Warning ("QC found possible untranslated Japanese in " + @($qc.japanese_ids).Count + " subtitle(s); sample id(s): " + $preview)
+        }
+        if (@($qc.length_outlier_ids).Count -gt 0) {
+            $preview = (@($qc.length_outlier_ids) | Select-Object -First 12) -join ","
+            Write-Warning ("QC found unusual source/translation length ratios in " + @($qc.length_outlier_ids).Count + " subtitle(s); sample id(s): " + $preview)
+        }
+
+        Emit-MachineEvent "qc" "done" @{
+            total = $script:Entries.Count
+            hard_errors = 0
+            warnings = [int]$qc.warning_count
+            possible_untranslated_japanese = @($qc.japanese_ids).Count
+            length_outliers = @($qc.length_outlier_ids).Count
+        }
+    }
+    catch {
+        Emit-MachineEvent "qc" "failed" @{message = $_.Exception.Message}
+        throw
+    }
+
     $tempOutput = $OutputPath + ".tmp"
     Write-Utf8NoBom $tempOutput $outputText
     Move-Item -LiteralPath $tempOutput -Destination $OutputPath -Force
