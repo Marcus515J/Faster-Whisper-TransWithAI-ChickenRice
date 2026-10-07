@@ -22,7 +22,7 @@ $script:Delimiter = "<|CR_SRT_SPLIT_9B7F|>"
 $script:ManagedServerProcess = $null
 $script:ManagedServerStdout = ""
 $script:ManagedServerStderr = ""
-$script:PromptRevision = "hymt2-stage2-v5"
+$script:PromptRevision = "hymt2-stage2-v6"
 $script:TermJaSeishi = ([string][char]0x305B) + ([string][char]0x30FC) + ([string][char]0x3057)
 $script:TermZhSperm = ([string][char]0x7CBE) + ([string][char]0x5B50)
 $script:TerminologyLine = "$($script:TermJaSeishi) translates to $($script:TermZhSperm)"
@@ -124,8 +124,7 @@ function Load-PromptConfig([string]$Path) {
     }
 }
 
-function Get-PromptGuidance([string]$SourceText) {
-    $sections = New-Object System.Collections.Generic.List[string]
+function Get-MatchingTerminologyLines([string]$SourceText) {
     $matchingTerms = New-Object System.Collections.Generic.List[string]
 
     foreach ($line in (@($script:TerminologyLine) + @($script:ExtraTerminologyLines))) {
@@ -141,6 +140,21 @@ function Get-PromptGuidance([string]$SourceText) {
             $matchingTerms.Add($termLine) | Out-Null
         }
     }
+
+    return @($matchingTerms)
+}
+
+function Get-TerminologySignature([object]$Target) {
+    $matchingTerms = @(Get-MatchingTerminologyLines ([string]$Target.ja))
+    if ($matchingTerms.Count -eq 0) {
+        return "__NO_TERMINOLOGY__"
+    }
+    return ($matchingTerms -join "`n")
+}
+
+function Get-PromptGuidance([string]$SourceText) {
+    $sections = New-Object System.Collections.Generic.List[string]
+    $matchingTerms = @(Get-MatchingTerminologyLines $SourceText)
 
     if ($matchingTerms.Count -gt 0) {
         $sections.Add("Reference the following translations:`n" + ($matchingTerms -join "`n")) | Out-Null
@@ -616,6 +630,12 @@ function Invoke-SelfTest {
         throw "Self-test terminology leakage prevention failed."
     }
 
+    $termTarget = [pscustomobject]@{ja = ("prefix " + $script:TermJaSeishi + " suffix")}
+    $plainTarget = [pscustomobject]@{ja = "similar but unrelated text"}
+    if ((Get-TerminologySignature $termTarget) -eq (Get-TerminologySignature $plainTarget)) {
+        throw "Self-test terminology grouping failed."
+    }
+
     $originalStyle = $script:StylePrompt
     $script:Model = "self-test-model"
     $fingerprintA = Get-TranslationFingerprint $sample
@@ -713,7 +733,18 @@ try {
 
         $batchTargets = @($pending | Where-Object {-not (Test-ShouldTranslateSingle $_)})
         if ($batchTargets.Count -gt 0) {
-            Invoke-ResilientGroup $batchTargets $endpoint
+            $terminologyGroups = [ordered]@{}
+            foreach ($target in $batchTargets) {
+                $signature = Get-TerminologySignature $target
+                if (-not $terminologyGroups.Contains($signature)) {
+                    $terminologyGroups[$signature] = New-Object System.Collections.Generic.List[object]
+                }
+                $terminologyGroups[$signature].Add($target) | Out-Null
+            }
+
+            foreach ($signature in $terminologyGroups.Keys) {
+                Invoke-ResilientGroup @($terminologyGroups[$signature]) $endpoint
+            }
         }
 
         $singleTargets = @($pending | Where-Object {Test-ShouldTranslateSingle $_})
