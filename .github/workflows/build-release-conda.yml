@@ -1,48 +1,64 @@
 name: Build and Release with Conda
 
-# Release pipeline: builds every Windows variant and publishes a GitHub Release.
-# Triggered on version tags, or manually when release_version is provided.
-# Plain build-and-check on pushes/PRs is handled by ci.yml, which reuses the
-# same build workflow.
+# Release pipeline: update release/VERSION on main (or run manually) to build,
+# smoke-test, and publish every Windows package plus the standalone Stage 2
+# runtime and Bridge recovery tools. Plain CI is handled by ci.yml.
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'release/VERSION'
   workflow_dispatch:
     inputs:
       release_version:
-        description: 'Release version (e.g., v1.0.0)'
+        description: 'Release version override (e.g., v1.11.0); empty = release/VERSION'
         required: false
         type: string
-      include_chickenrice:
-        description: 'Deprecated and ignored; all model variants are included'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  # Build every Windows variant and run the executable smoke (e2e) checks,
-  # then upload each build as an artifact for the publish jobs below.
-  # Shared with ci.yml (which calls the same workflow with upload_artifacts: false).
+  resolve-release:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+    - name: Checkout release metadata
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: |
+          release/VERSION
+        sparse-checkout-cone-mode: false
+
+    - name: Resolve and validate version
+      id: version
+      shell: bash
+      run: |
+        version="${{ inputs.release_version }}"
+        if [ -z "$version" ]; then
+          version="$(tr -d '\r\n ' < release/VERSION)"
+        fi
+        if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Invalid release version: $version"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Release version: $version"
+
   build-windows:
     name: Build Windows
     uses: ./.github/workflows/build-windows.yml
-    # upload_artifacts defaults to true, so each variant is uploaded as an
-    # artifact that the create-release / upload-* jobs download in this same run.
 
-  # Create the initial GitHub release
   create-release:
     name: Create GitHub Release
-    needs: [build-windows]
+    needs: [resolve-release, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_version != ''
     permissions:
       contents: write
-    outputs:
-      release_created: ${{ steps.create.outputs.release_created }}
 
     steps:
-    - name: Checkout code for release notes
+    - name: Checkout release notes
       uses: actions/checkout@v4
       with:
         sparse-checkout: |
@@ -51,41 +67,36 @@ jobs:
 
     - name: Read release body
       id: read_body
+      shell: bash
       run: |
         if [ -f "RELEASE_NOTES_CN.md" ]; then
-          echo 'body<<EOF' >> $GITHUB_OUTPUT
-          cat RELEASE_NOTES_CN.md >> $GITHUB_OUTPUT
-          echo 'EOF' >> $GITHUB_OUTPUT
+          echo 'body<<EOF' >> "$GITHUB_OUTPUT"
+          cat RELEASE_NOTES_CN.md >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
         else
-          echo 'body=Release created by GitHub Actions' >> $GITHUB_OUTPUT
+          echo 'body=Release created by GitHub Actions' >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Create empty placeholder file for initial release
+    - name: Create placeholder
       run: |
-        echo "This release contains large binary files. Files are being uploaded..." > placeholder.txt
+        echo "Release assets are being uploaded by GitHub Actions." > placeholder.txt
 
-    - name: Create Release with placeholder
-      id: create
+    - name: Create release
       uses: ading2210/gh-large-releases@v1
       with:
         repository: ${{ github.repository }}
-        tag_name: ${{ inputs.release_version || github.ref_name }}
-        name: ${{ inputs.release_version || github.ref_name }}
+        tag_name: ${{ needs.resolve-release.outputs.version }}
+        name: ${{ needs.resolve-release.outputs.version }}
         body: ${{ steps.read_body.outputs.body }}
         draft: false
         prerelease: false
         files: placeholder.txt
         token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Set output
-      run: echo "release_created=true" >> $GITHUB_OUTPUT
-
-  # Parallel upload matrix - each row handles one build/model artifact.
   upload-assets:
     name: Upload ${{ matrix.build.label }} ${{ matrix.model.label }}
-    needs: [create-release]
+    needs: [resolve-release, create-release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_version != ''
     permissions:
       contents: write
     strategy:
@@ -121,21 +132,136 @@ jobs:
         name: faster_whisper_transwithai_windows_${{ matrix.build.suffix }}-${{ matrix.model.suffix }}
         path: artifact/
 
-    - name: Create archive with optimized compression
+    - name: Create archive
       run: |
         archive_name="faster_whisper_transwithai_windows_${{ matrix.build.suffix }}-${{ matrix.model.suffix }}.zip"
         cd artifact
-        echo "Creating archive for ${{ matrix.build.label }} ${{ matrix.model.label }} variant..."
-        # Using compression level 5 for faster builds (was level 9).
-        # Level 5 provides good balance between speed and compression ratio.
         zip -5 -r -q "../$archive_name" .
         cd ..
         echo "Archive created: $(ls -lh "$archive_name" | awk '{print $5}')"
 
-    - name: Upload to release with large file support
+    - name: Upload release asset
       uses: ading2210/gh-large-releases@v1
       with:
         repository: ${{ github.repository }}
-        tag_name: ${{ inputs.release_version || github.ref_name }}
+        tag_name: ${{ needs.resolve-release.outputs.version }}
         files: faster_whisper_transwithai_windows_${{ matrix.build.suffix }}-${{ matrix.model.suffix }}.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-stage2-runtime:
+    name: Upload portable Stage 2 runtime
+    needs: [resolve-release, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout runtime manifest
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: |
+          tools/stage2_runtime_manifest.json
+          tools/README_pipeline_bridge.md
+        sparse-checkout-cone-mode: false
+
+    - name: Download and verify pinned llama.cpp runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN_URL="https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-win-cuda-12.4-x64.zip"
+        BIN_SHA="dd6df685c1024e6aa55ca55ad35038692d5e284d4dc895e7a646c3245d3d14ff"
+        CUDA_URL="https://github.com/ggml-org/llama.cpp/releases/download/b11429/cudart-llama-bin-win-cuda-12.4-x64.zip"
+        CUDA_SHA="8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
+
+        curl -L --fail --retry 5 -o llama-bin.zip "$BIN_URL"
+        curl -L --fail --retry 5 -o llama-cudart.zip "$CUDA_URL"
+        echo "$BIN_SHA  llama-bin.zip" | sha256sum -c -
+        echo "$CUDA_SHA  llama-cudart.zip" | sha256sum -c -
+
+        mkdir -p payload/llama.cpp
+        unzip -q llama-bin.zip -d payload/llama.cpp
+        unzip -q llama-cudart.zip -d payload/llama.cpp
+        test -f payload/llama.cpp/llama-server.exe
+
+        cp tools/stage2_runtime_manifest.json payload/
+        cp tools/README_pipeline_bridge.md payload/
+
+        cat > payload/RUNTIME_INFO.txt <<'EOF'
+ChickenRice Stage 2 portable runtime
+Tested llama.cpp: b11429 / v0.6.0 commit d812350
+Backend: Windows x64 CUDA 12 (CUDA 12.4 runtime DLLs)
+Hy-MT2 model is intentionally NOT bundled; use setup_stage2_runtime.ps1.
+EOF
+
+        cd payload
+        zip -5 -r -q ../chickenrice_stage2_runtime_win_cuda12.zip .
+        cd ..
+        ls -lh chickenrice_stage2_runtime_win_cuda12.zip
+
+    - name: Upload Stage 2 runtime
+      uses: ading2210/gh-large-releases@v1
+      with:
+        repository: ${{ github.repository }}
+        tag_name: ${{ needs.resolve-release.outputs.version }}
+        files: chickenrice_stage2_runtime_win_cuda12.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-bridge-tools:
+    name: Upload lightweight Bridge recovery tools
+    needs: [resolve-release, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout recovery tools
+      uses: actions/checkout@v4
+
+    - name: Build Bridge tools archive
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p payload
+
+        for file in \
+          tools/install_full_pipeline.ps1 \
+          tools/setup_stage2_runtime.ps1 \
+          tools/run_full_pipeline_local.ps1 \
+          tools/run_japanese_to_chinese_pipeline.ps1 \
+          tools/translate_srt_hymt2.ps1 \
+          tools/translate_srt_api.ps1 \
+          tools/translate_srt_to_chinese.bat \
+          tools/hymt2_prompt_config.example.json \
+          tools/pipeline_job.example.json \
+          tools/translation_api_config.example.json \
+          tools/stage2_runtime_manifest.json \
+          tools/README_pipeline_bridge.md \
+          tools/README_stage2_translation.md \
+          长期恢复指南_日文转中文字幕.md; do
+          cp "$file" payload/
+        done
+
+        cat > payload/从零开始.txt <<'EOF'
+推荐入口：
+1. 打开 PowerShell。
+2. 运行：
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_full_pipeline.ps1 -InstallRoot "H:\AI\ChickenRice-HyMT2"
+
+脚本会自动下载对应的 transcribe Release 包、Stage 2 runtime 和 Hy-MT2 模型。
+详细说明见：长期恢复指南_日文转中文字幕.md
+EOF
+
+        version="${{ needs.resolve-release.outputs.version }}"
+        archive="chickenrice_bridge_tools_${version}.zip"
+        cd payload
+        zip -9 -r -q "../$archive" .
+        cd ..
+        ls -lh "$archive"
+
+    - name: Upload Bridge tools
+      uses: ading2210/gh-large-releases@v1
+      with:
+        repository: ${{ github.repository }}
+        tag_name: ${{ needs.resolve-release.outputs.version }}
+        files: chickenrice_bridge_tools_${{ needs.resolve-release.outputs.version }}.zip
         token: ${{ secrets.GITHUB_TOKEN }}
