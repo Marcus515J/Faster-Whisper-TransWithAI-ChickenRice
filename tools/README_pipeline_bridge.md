@@ -75,7 +75,7 @@ This helper is deliberately separate from the main Stage 1 -> Stage 2 pipeline. 
 
 The helper never edits the cached Japanese SRT or the final Chinese SRT. Its output is second-opinion evidence for a caller such as SubtitleSyncTool. Consumers may combine that evidence with surrounding subtitles and a later text review, but must not treat it as ground truth.
 
-Default clip padding is 3.5 seconds before and after each suspicious cue. Temporary WAV/SRT work files are removed after a successful run unless `keep_work_files=true`.
+Each suspicious cue is now re-transcribed twice in the same Whisper load: a wider context window (default 3.5 seconds before/after) and a tight target window (default 0.8 seconds before/after). The bridge returns both texts separately so the caller can prefer the tight evidence while still using the context pass for disambiguation. Temporary WAV/SRT work files are removed after a successful run unless `keep_work_files=true`.
 
 ## Progress protocol
 
