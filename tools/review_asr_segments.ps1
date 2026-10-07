@@ -400,24 +400,44 @@ try {
     $completed = 0
     foreach ($record in $clipRecords) {
         $completed++
-        $srtPath = [System.IO.Path]::ChangeExtension([string]$record.clip_path, ".srt")
-        if (-not (Test-Path -LiteralPath $srtPath)) {
-            Emit-Event "result" @{
-                id = [int]$record.id
-                original = [string]$record.original
-                reanalyzed = ""
-                error = "No SRT was produced for the extracted clip."
-            }
-            continue
+        $contextSrt = [System.IO.Path]::ChangeExtension([string]$record.context_path, ".srt")
+        $tightSrt = [System.IO.Path]::ChangeExtension([string]$record.tight_path, ".srt")
+
+        $contextText = ""
+        $tightText = ""
+        $errors = New-Object System.Collections.Generic.List[string]
+
+        if (Test-Path -LiteralPath $contextSrt) {
+            $contextEntries = Parse-Srt $contextSrt
+            $contextText = Select-TargetTranscript $contextEntries ([int64]$record.context_target_start_ms) ([int64]$record.context_target_end_ms) 900
+        }
+        else {
+            $errors.Add("Context clip produced no SRT.") | Out-Null
         }
 
-        $entries = Parse-Srt $srtPath
-        $reanalyzed = Select-TargetTranscript $entries ([int64]$record.target_start_ms) ([int64]$record.target_end_ms)
+        if (Test-Path -LiteralPath $tightSrt) {
+            $tightEntries = Parse-Srt $tightSrt
+            $tightText = Select-TargetTranscript $tightEntries ([int64]$record.tight_target_start_ms) ([int64]$record.tight_target_end_ms) 500
+            if (-not $tightText -and $tightEntries.Count -gt 0) {
+                $tightText = (($tightEntries | ForEach-Object { [string]$_.text }) -join " ").Trim()
+            }
+        }
+        else {
+            $errors.Add("Tight clip produced no SRT.") | Out-Null
+        }
+
+        $reanalyzed = $tightText
+        if (-not $reanalyzed) {
+            $reanalyzed = $contextText
+        }
 
         Emit-Event "result" @{
             id = [int]$record.id
             original = [string]$record.original
             reanalyzed = $reanalyzed
+            reanalyzed_tight = $tightText
+            reanalyzed_context = $contextText
+            error = (($errors.ToArray()) -join " ")
             completed = $completed
             total = $clipRecords.Count
         }
