@@ -1,10 +1,10 @@
 # Actions 用量/费用与私有仓库超额风险调查报告（2026-10）
 
-- **报告版本**：v1.2 (`docs/reports/actions-cost-2026-10_v1.md`)
+- **报告版本**：v1.3 (`docs/reports/actions-cost-2026-10_v1.md`)
 - **调查对象**：`Marcus515J/Faster-Whisper-TransWithAI-ChickenRice`
 - **执行方**：ANTI
 - **指挥**：Claude Code
-- **调查基准日期**：2026-10-24（2026-10-26 第三轮复核修订）
+- **调查基准日期**：2026-10-24（2026-10-26 证据标签专项修订）
 - **证据分级标准**：
   - **【已查证】**：附有官方文档链接或权威公开资料。
   - **【已实测】**：注明执行人、执行环境及具体运行的命令与输出。
@@ -20,7 +20,7 @@
   3. **关于 $57.72 的账单构成**：经核实，GitHub 对所有已启动的 Job（包含失败和取消）均计费，且官方现行价全量折算总额约为 $65.56，与账单显示的 $57.72 并不相等。因当前 API Token 缺少 `user` 权限，**技术上属于【无法可靠拆分】状态，需要 J 在 GitHub 网页导出 Billing Usage CSV 进行真对账**。
   4. **私有仓库换算结论**：按 GitHub 官方现行标准费率（Linux $0.006/min，Windows $0.010/min，折算比约 1.67x），10 月相同用量折算为 **10,927 分钟 Linux 等效分钟**，占 GitHub Free 每月 2,000 分钟免费额度的 **546.4%**（超额 4.46 倍）；超出部分将产生 **$53.56** 的实扣账单（若为 Pro 计划，占 364.2%，超额产生 $47.56）。
   5. **单次完整发布的真实消耗【已实测折算】**：实测两次成功的完整发布（Run `37397469369` 与 Run `37562016438`），单次实际消耗 569~596 计费分钟（Windows 约 390~398m，Linux 约 179~198m）。折合等效 Linux 分钟为 **830 ~ 860 分钟**（若全按 Windows 顶格上限折算约为 **950 ~ 1,000 分钟**），单次发布即占 GitHub Free 2,000 分钟额度的 **约 42% ~ 50%**。这意味着在私有仓库中，**每个月只要跑约 2 次完整发布，整月的免费算力额度即告耗尽**。
-  6. **构件存储的致命卡点【推测，未验证】**：每次完整发布产生 21 个构件（约 65 GB）。官方默认保留期为 90 天。在私有仓库中，GitHub Free 仅含 500 MB、Pro 仅含 1 GB 构件存储额度。若将 Spending limit 硬设为 $0，**构件存储会在上传第 1~2 个包时超额被 GitHub 阻止（抛出 HTTP 403），导致发布流水线中断，比 2,000 分钟算力额度更早成为致命卡点**。
+  6. **构件存储的致命卡点【推测，未验证】**：每次完整发布产生 21 个构件（约 65 GB）。官方默认保留期为 90 天。在私有仓库中，GitHub Free 仅含 500 MB、Pro 仅含 1 GB 构件存储额度。若将 Spending limit 硬设为 $0，**构件存储会在上传第 1~2 个包时超额被 GitHub 阻止/失败，导致发布流水线中断，比 2,000 分钟算力额度更早成为致命卡点**。
 - **验证手段**：通过 `gh api` 抓取 2026-10 全量 runs、jobs、timing 及 artifacts 数据，由 Python 脚本进行确定性解析与账目拟合。
 - **行动建议**：推荐实施 **选项 A + C（排队不取消） + D（90m 兜底） + F（1 天保留） + 构件存储改造/微量预算（解决存储卡死）** 组合。选项 B 因违反 AGENTS.md 规定必须排除。
 
@@ -220,15 +220,15 @@
 
 每项独立可选，未经维护者确认前**不进行任何实际改动**：
 
-| 选项 | 做什么 | 省多少（真实数据折算） | 代价 | 改动范围 | 回退方式 | 是否影响现有发布流程 |
+| 选项 | 做什么 | 省多少（真实数据折算 / 估算标注） | 代价 | 改动范围 | 回退方式 | 是否影响现有发布流程 |
 | :---: | :--- | :--- | :--- | :--- | :--- | :---: |
 | **A** | **CI 坚决禁用自动 Windows 打包**（已在 10-07 实施，需制度化确立） | **【已落实措施】**10-06 历史浪费已消除。今后核心防范点：单次完整发布消耗约 830~860 等效分钟（占月度额度 42%~50%） | PR 阶段不打包 Windows 二进制，改在发布时统一打包 | 确认 `.github/workflows/ci.yml` 保持 manual 条件 | 移除 `if: workflow_dispatch` | **无影响**（发布走 `build-release-conda.yml`） |
 | **B** | **PowerShell 检查改在 Linux (`ubuntu-latest`) 下跑 `pwsh`** | 节省 38 换算分钟（Windows 1.67x 降为 Linux 1x，省 40%） | **【严重代价】直接违反 AGENTS.md 规则**（根目录 AGENTS.md 明确要求“发布前必须让 Windows PowerShell 5.1 做语法检查”，Linux 只有 pwsh 7，无法检验 PS 5.1 特有怪癖） | 修改 `ci.yml` 中 `powershell-parse` 的运行环境 | 改回 `runs-on: windows-latest` | **违反规则，强烈不建议实施** |
-| **C** | **在 Release 流水线补充 `concurrency`（排队，但不取消进行中的运行）** | **防范至少 500 ~ 950 换算分钟/次**（防止连续重试导致多个 21-job 矩阵并发跑） | 重试发布时必须等待前一次流水线完成，不能插队立即开始 | 修改 `build-release-conda.yml` 增加 `concurrency: group: release-${{ github.workflow }}`，**禁止**设置 `cancel-in-progress: true`（见下方证据） | 删掉该配置段 | **安全受益**（绝不会留下残缺 Release） |
+| **C** | **在 Release 流水线补充 `concurrency`（排队，但不取消进行中的运行）** | **防范约 830 ~ 950 换算分钟/次（估算，未验证）**【算法：防止重试时重复触发整条发布流水线；按实测单次成功发布 569~596 计费分钟折算约 830~860 等效分钟，全 Windows 顶格上限约为 950 分钟】 | 重试发布时必须等待前一次流水线完成，不能插队立即开始 | 修改 `build-release-conda.yml` 增加 `concurrency: group: release-${{ github.workflow }}`，**禁止**设置 `cancel-in-progress: true`（见下方证据） | 删掉该配置段 | **安全受益**（绝不会留下残缺 Release） |
 | **D** | **为所有 Job 设置严格 `timeout-minutes`**（Windows 打包设 90m，CI 设 10m） | **防挂起兜底**：实测单个最长构建达 39.4m，设 90m 拥有约 2.3 倍安全余量。若 PyInstaller/Conda 卡死，单 job 最多浪费 90m 而非默认 360m（省 270m Windows ≈ 450 等效分/次） | 若网络极度恶劣导致真实构建超过 90 分钟会被超时终止 | 修改 `.github/workflows/*.yml` 各 job | 删掉 `timeout-minutes` | **无影响**（最长构建约 39.4m，90m 余量充裕，杜绝 60m 误杀风险） |
-| **E** | **精简私有环境发布矩阵（只保留 CUDA 核心包）** | 单次发布从 21 个 job 降为 4 个 job，单次发布**节省约 650 换算分钟**（从约 850m 降至约 200m） | 放弃自动构建 AMD gfx 架构和部分 CUDA 旧版本，小众环境需手动单独打 | 修改 `build-release-conda.yml` 的 matrix | 还原 matrix 列表 | **有影响**（减少 Release 资产多样性，需维护者拍板） |
+| **E** | **精简私有环境发布矩阵（只保留 CUDA 核心包）** | 单次发布从 21 个 Windows job 降为 4 个，单次发布**节省约 650 换算分钟（估算，未验证）**【算法：减少 17 个 Windows 打包 job，按单 job 实测平均约 23m 计算，17 × 23m × 1.67x ≈ 653 等效分钟；单次发布耗时从约 850m 降至约 200m】 | 放弃自动构建 AMD gfx 架构和部分 CUDA 旧版本，小众环境需手动单独打 | 修改 `build-release-conda.yml` 的 matrix | 还原 matrix 列表 | **有影响**（减少 Release 资产多样性，需维护者拍板） |
 | **F** | **设置 Artifacts 保留期为 1 天 (`retention-days: 1`)** | **避免每月最高约 \$32.40 理论上限存储费**（官方默认保留 90 天，多版本累积将严重超额；设为 1 天后单次发布存储仅约 **\$0.50**） | 临时构件 1 天后过期，不能在数周后回溯下载中间调试文件（但 Release 资产不受影响） | 修改 `build-windows.yml` upload-artifact 步骤加 `retention-days: 1` | 改回默认 90 天 | **无影响**【已实测】Release 发布包在流水线结束前已上传到 GitHub Releases（见下方证据） |
-| **G** | **GitHub 账户级防御：Spending Limit 设为 \$0 的风险与配套改造** | **100% 物理消除信用卡扣款风险** | **【严重隐患】构件存储额度极早卡死发布**：Free 仅含 500MB、Pro 仅含 1GB 存储，单次发布生成 65GB 构件。若设 $0，上传第 1~2 个包即遭 GitHub 拦截中断（见下方分析） | 需配套改造发布流水线：改为不通过 Actions Artifact 中转，直传 Release；或设置微量预算（如 $2/月） | 随时在网页调高限额 | **直接设 $0 会导致当前发布流水线必崩** |
+| **G** | **GitHub 账户级防御：Spending Limit 设为 \$0 的风险与配套改造** | **100% 物理消除信用卡扣款风险** | **【严重隐患】构件存储额度极早卡死发布【推测，未验证】**：Free 仅含 500MB、Pro 仅含 1GB 存储，单次发布生成 65GB 构件。推测若设 $0，上传第 1~2 个包时即会因超额被阻止/失败（见下方分析） | 需配套改造发布流水线：改为不通过 Actions Artifact 中转，直传 Release；或设置微量预算（如 $2/月） | 随时在网页调高限额 | **直接设 $0 推测会导致当前发布流水线受阻中断** |
 | **H** | **私有仓库只保留手动触发 (`workflow_dispatch`)** | **节省 100% 被动触发分钟** | 失去自动化 CI 保护，所有构建必须人工去 Actions 页面点击 | 修改各 workflow `on:` 仅留 `workflow_dispatch` | 加回 `push`/`pull_request` | **有重大影响**（改变 `release/VERSION` 合并自动发布的行为契约） |
 
 ---
@@ -239,33 +239,32 @@
 【已查证】+【已实测】
 - 根目录 `AGENTS.md` 明确规定：
   > “不要手工创建一个缺少二进制资产的同名 Release。 发布流水线本身失败、需要重跑同一版本时，只更新 `release/TRIGGER`；不得为了重试伪造新的版本号。”
-- 查阅 `.github/workflows/build-release-conda.yml` 第 54-96 行：流水线首先由 `create-release` job 创建 GitHub Release 草稿/占位实体，随后由矩阵 job 逐个上传 21 个打包二进制文件。
+- 【已实测】执行人 ANTI 查阅本地代码（基于 commit `209ce2142c125e0da1e92e3de070ba4733a1eacf` 时的 `.github/workflows/build-release-conda.yml` 第 54-96 行）：流水线首先由 `create-release` job 创建 GitHub Release 草稿/占位实体，随后由矩阵 job 逐个上传 21 个打包二进制文件。
 - 如果在发布流水线上设置了 `cancel-in-progress: true`，当维护者推送 `release/TRIGGER` 触发重跑时，前一次正在上传资产的流水线会被立即掐断中止。这会导致已经在 GitHub 上创建的 Release 缺少部分资产，**留下残缺不全的同名 Release，严重破坏 AGENTS.md 核心发布准则**。
 - **正确做法**：仅设置 `concurrency: group: release-${{ github.workflow }}`（不设 `cancel-in-progress: true` 或显式设为 `false`）。新重试会自动排队，等待前一次流水线完整结束后再执行，安全合规。
 
 ### 2. 为什么选项 G（Spending Limit = $0）会比算力分钟更早搞崩私有仓库发布？
 【已查证】+【推测，未验证】
 - **官方规则依据**【已查证】：
-  - [About billing for GitHub Actions](https://docs.github.com/en/billing/concepts/product-billing/github-actions)：
-    > “If your account has a spending limit of $0, or has reached its spending limit, your jobs may fail if you try to upload artifacts or packages.”（如果账户支出上限为 $0 或达到限额，尝试上传构件或包时作业将失败）。
+  - [About billing for GitHub Actions](https://docs.github.com/en/billing/concepts/product-billing/github-actions)：官方文档明确写明「没有有效付款方式时，用完额度后使用会被阻止」（"If you do not have a paid account or an Azure subscription to pay for services, your usage is limited to the included amounts. When you reach the included amounts, your usage will be blocked"）。
   - 私有仓库构件存储配额：GitHub Free 仅 **500 MB**，GitHub Pro 仅 **1 GB**。
 - **发布流水线实际运行现状**【已实测】：
   - 单次完整发布生成 21 个 Windows 包，总大小约为 **65 GB**（每个包 2.5 ~ 5.5 GB 不等）。
   - 当前架构在 `build-windows.yml` 中必须通过 `actions/upload-artifact@v6` 上传临时构件，再由 `build-release-conda.yml` 下载并上传至 Release。
 - **致命卡点推断**【推测，未验证】：
-  - 在私有仓库中，当 Spending limit 设为 $0 时，发布流水线构建到第 1 个包（约 3 GB）尝试上传时，就会立即触碰 500MB/1GB 存储上限，GitHub API 将直接拒绝上传并使 Job 报错失败！
-  - **这意味着在私有仓库中，发布流水线根本无法跑完第 1 个包，构件存储超额会比 2,000 分钟配额更快、更致命地中断发布**！
+  - 在私有仓库中，当 Spending limit 设为 $0 时，推测发布流水线构建到第 1 个包（约 3 GB）尝试上传时，即会因触碰 500MB/1GB 免费存储上限而被 GitHub 阻止并导致 Job 失败中断。
+  - **推测在私有仓库中，构件存储超额会比 2,000 分钟算力额度更早成为发布流水线受阻中断的卡点**。
 - **推荐解决路径**：
   - **方案一（免构件存储架构改造）**：修改工作流，取消中间的 `upload-artifact` 步骤，让 Windows 打包 Job 在编译完成后直接调用 `gh release upload` 将产物直传至 GitHub Releases。
   - **方案二（微量存储预算）**：若维持现有 Artifact 中转架构，不可设 Spending limit 为 $0，需配置微量预算（例如每月 $2.00），并配合选项 F（`retention-days: 1`）。由于单次发布 65 GB 仅留存 1 天的理论成本约为 **$0.50**，微量预算足以保证发布顺利跑完，同时卡死大额扣款风险。
 
 ### 3. 选项 F 的保留期与 Releases 资产隔离证据
 【已查证】+【已实测】
-- **默认保留期**【已查证】：根据 [GitHub Actions 官方管理文档](https://docs.github.com/en/actions/administering-github-actions/usage-limits-billing-and-administration)，GitHub Actions 构件和日志的默认保留期为 **90 天**。若不显式指定，私有仓库中每次发布的 65 GB 都会保留 3 个月，产生持续累积的存储账单（129 GB 存满一个月理论上限为 $32.41）。
+- **默认保留期**【已查证】：根据 [Remove workflow artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts) 官方文档明确说明：“By default, GitHub stores build logs and artifacts for 90 days”（默认情况下，GitHub 将构建日志和构件保留 90 天）。若不显式指定，私有仓库中每次发布的 65 GB 都会保留 3 个月，产生持续累积的存储账单（129 GB 存满一个月理论上限为 $32.41）。
 - **1 天保留成本估算**：65 GB 构件保留 1 天（24 小时），按月折算成本为：
   $$65 \text{ GB} \times \frac{1 \text{ 天}}{30 \text{ 天}} \times \$0.25/\text{GB} \approx \$0.54 \text{（约 \$0.50/次发布）}$$
 - **Releases 资产系统隔离证据**【已实测】：
-  1. 查阅代码 `.github/workflows/build-release-conda.yml` 第 97-150 行：`upload-assets` job 紧随 `build-windows` 之后执行，下载 Artifact 后立即使用 `ading2210/gh-large-releases@v1` 将产物上传至 GitHub Releases；
+  1. 【已实测】执行人 ANTI 查阅本地代码（基于 commit `209ce2142c125e0da1e92e3de070ba4733a1eacf` 时的 `.github/workflows/build-release-conda.yml` 第 97-150 行）：`upload-assets` job 紧随 `build-windows` 之后执行，下载 Artifact 后立即使用 `ading2210/gh-large-releases@v1` 将产物上传至 GitHub Releases；
   2. GitHub Releases 资产独立存放于 GitHub CDN 存储，不计入 Actions Artifact 存储池；
   3. 工作流运行结束时，所有正式包已被持久化到 Release 页面。因此缩短 Actions Artifact 的 `retention-days` 至 1 天，对用户端下载正式版本资产 **零影响**。
 
